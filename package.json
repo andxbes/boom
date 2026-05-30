@@ -34,6 +34,7 @@
   "devDependencies": {
     "@types/react": "~19.1.10",
     "dotenv-cli": "^8.0.0",
+    "eas-cli": "^16.0.0",
     "typescript": "~5.9.2"
   },
   "scripts": {
@@ -44,11 +45,14 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "generate:icons": "python3 scripts/generate-icons.py",
-    "eas:login": "eas login",
-    "eas:init": "eas init",
-    "build:apk": "dotenv -e .env -- npx eas-cli build --platform android --profile preview --non-interactive --wait",
+    "eas:login": "npx eas-cli login",
+    "eas:init": "dotenv -e .env -- npx eas-cli init --non-interactive --force",
+    "eas:credentials:android": "dotenv -e .env -- npx eas-cli credentials -p android",
+    "build:apk": "dotenv -e .env -- npx eas-cli build --platform android --profile preview --wait",
+    "build:apk:ci": "dotenv -e .env -- npx eas-cli build --platform android --profile preview --non-interactive --wait",
     "download:apk": "dotenv -e .env -- node ./scripts/download-apk.js",
-    "build:android:prod": "dotenv -e .env -- npx eas-cli build --platform android --profile production"
+    "build:android:prod": "dotenv -e .env -- npx eas-cli build --platform android --profile production --wait",
+    "build:android:prod:ci": "dotenv -e .env -- npx eas-cli build --platform android --profile production --non-interactive --wait"
   },
   "private": true
 }
