@@ -43,6 +43,7 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
+    "generate:icons": "python3 scripts/generate-icons.py",
     "eas:login": "eas login",
     "eas:init": "eas init",
     "build:apk": "dotenv -e .env -- npx eas-cli build --platform android --profile preview --non-interactive --wait",
