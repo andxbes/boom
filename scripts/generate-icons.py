@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
-"""Generate Boom app icons — cartoon comic-book explosion."""
+"""Generate Boom app icons — cartoon comic-book explosion (no text)."""
 
 from __future__ import annotations
 
 import math
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "assets" / "images"
 
-# Cartoon palette — яркие, насыщенные
 BLACK = (18, 12, 28)
 BG_TOP = (45, 55, 140)
 BG_BOTTOM = (22, 28, 78)
@@ -22,14 +21,6 @@ AMBER = (255, 210, 0)
 YELLOW = (255, 245, 80)
 WHITE = (255, 255, 255)
 PUFF = (240, 245, 255)
-SHADOW = (0, 0, 0, 80)
-
-FONT_CANDIDATES = [
-    "/usr/share/fonts/TTF/ComicNeue-Bold.ttf",
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-]
 
 
 def lerp(a: float, b: float, t: float) -> float:
@@ -38,13 +29,6 @@ def lerp(a: float, b: float, t: float) -> float:
 
 def lerp_color(c1: tuple[int, ...], c2: tuple[int, ...], t: float) -> tuple[int, int, int]:
     return tuple(int(lerp(c1[i], c2[i], t)) for i in range(3))  # type: ignore[return-value]
-
-
-def load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    for path in FONT_CANDIDATES:
-        if Path(path).exists():
-            return ImageFont.truetype(path, size)
-    return ImageFont.load_default()
 
 
 def radial_background(size: int) -> Image.Image:
@@ -58,9 +42,7 @@ def radial_background(size: int) -> Image.Image:
             px[x, y] = (*lerp_color(BG_TOP, BG_BOTTOM, d), 255)
 
     draw = ImageDraw.Draw(img)
-    # Мультяшные звёздочки на фоне
-    rng_seed = [(0.12, 0.18), (0.82, 0.14), (0.88, 0.72), (0.15, 0.78), (0.5, 0.08), (0.72, 0.45)]
-    for fx, fy in rng_seed:
+    for fx, fy in [(0.12, 0.18), (0.82, 0.14), (0.88, 0.72), (0.15, 0.78), (0.5, 0.08), (0.72, 0.45)]:
         sx, sy = fx * size, fy * size
         r = max(2, size // 180)
         draw.ellipse((sx - r, sy - r, sx + r, sy + r), fill=(*SKY_STAR, 180))
@@ -83,7 +65,6 @@ def cartoon_star_points(
         is_outer = i % 2 == 0
         r = outer_r if is_outer else inner_r
         if is_outer:
-            # Неровные «мультяшные» лучи
             r *= 1 + wobble * math.sin(i * 1.73 + 0.4)
             r *= 1 + wobble * 0.35 * math.cos(i * 2.9)
         else:
@@ -112,8 +93,7 @@ def draw_outlined_ellipse(
     fill: tuple[int, int, int],
     stroke: int,
 ) -> None:
-    stroke = max(2, stroke)
-    draw.ellipse(bbox, fill=fill, outline=BLACK, width=stroke)
+    draw.ellipse(bbox, fill=fill, outline=BLACK, width=max(2, stroke))
 
 
 def draw_cartoon_puff(
@@ -123,16 +103,8 @@ def draw_cartoon_puff(
     scale: float,
     stroke: int,
 ) -> None:
-    """Пушистое облачко дыма — классика комиксов."""
     s = scale
-    blobs = [
-        (0, 0, 42),
-        (-38, 8, 30),
-        (36, 10, 28),
-        (-18, -28, 24),
-        (22, -24, 22),
-    ]
-    for ox, oy, r in blobs:
+    for ox, oy, r in [(0, 0, 42), (-38, 8, 30), (36, 10, 28), (-18, -28, 24), (22, -24, 22)]:
         rr = r * s
         x, y = cx + ox * s, cy + oy * s
         draw.ellipse((x - rr, y - rr, x + rr, y + rr), fill=PUFF, outline=BLACK, width=stroke)
@@ -149,25 +121,32 @@ def draw_cartoon_dot(
     draw.ellipse((x - r, y - r, x + r, y + r), fill=fill, outline=BLACK, width=stroke)
 
 
-def draw_halftone(
-    draw: ImageDraw.ImageDraw,
-    cx: float,
-    cy: float,
-    radius: float,
-    scale: float,
-) -> None:
-    """Точки halftone — комиксная штриховка."""
+def draw_halftone(draw: ImageDraw.ImageDraw, cx: float, cy: float, radius: float, scale: float) -> None:
     step = 22 * scale
     dot_r = max(2, int(4 * scale))
-    start = int(cx - radius)
-    end = int(cx + radius)
     for gy in range(int(cy - radius), int(cy + radius), int(step)):
-        for gx in range(start, end, int(step)):
+        for gx in range(int(cx - radius), int(cx + radius), int(step)):
             if math.hypot(gx - cx, gy - cy) < radius * 0.85:
                 draw.ellipse(
                     (gx - dot_r, gy - dot_r, gx + dot_r, gy + dot_r),
                     fill=(255, 200, 60, 120),
                 )
+
+
+def draw_center_flash(draw: ImageDraw.ImageDraw, cx: float, cy: float, s: float, stroke: int) -> None:
+    """Яркое ядро вместо текста — многослойная вспышка."""
+    draw_outlined_ellipse(draw, (cx - 78 * s, cy - 78 * s, cx + 78 * s, cy + 78 * s), YELLOW, stroke)
+    draw_outlined_ellipse(draw, (cx - 52 * s, cy - 52 * s, cx + 52 * s, cy + 52 * s), AMBER, max(3, stroke - 4))
+    draw_outlined_ellipse(draw, (cx - 34 * s, cy - 34 * s, cx + 34 * s, cy + 34 * s), WHITE, max(3, int(12 * s)))
+
+    # Маленькая 4-лучевая звезда в центре
+    star_r = 18 * s
+    star = []
+    for i in range(8):
+        angle = (2 * math.pi * i / 8) - math.pi / 2
+        r = star_r if i % 2 == 0 else star_r * 0.38
+        star.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+    draw_outlined_polygon(draw, star, WHITE, max(3, int(8 * s)))
 
 
 def draw_drop_shadow(size: int, cx: float, cy: float, scale: float) -> Image.Image:
@@ -179,84 +158,53 @@ def draw_drop_shadow(size: int, cx: float, cy: float, scale: float) -> Image.Ima
     return layer.filter(ImageFilter.GaussianBlur(radius=max(3, int(14 * scale))))
 
 
-def draw_explosion(size: int, cx: float, cy: float, scale: float = 1.0, show_text: bool = True) -> Image.Image:
+def draw_explosion(size: int, cx: float, cy: float, scale: float = 1.0) -> Image.Image:
     layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
     s = scale
     stroke = int(16 * s)
 
-    # Тень под взрывом
     shadow = draw_drop_shadow(size, cx, cy, s)
     layer = Image.alpha_composite(layer, shadow)
     draw = ImageDraw.Draw(layer)
 
-    # Дымовые облачка по краям
-    puffs = [
-        (-195, -120), (210, -95), (-175, 155), (185, 140), (-230, 30), (225, 15),
-    ]
-    for px, py in puffs:
+    for px, py in [(-195, -120), (210, -95), (-175, 155), (185, 140), (-230, 30), (225, 15)]:
         draw_cartoon_puff(draw, cx + px * s, cy + py * s, 0.55 * s, max(3, int(8 * s)))
 
-    # Halftone под взрывом
     halftone_layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     halftone_draw = ImageDraw.Draw(halftone_layer)
-    draw_halftone(halftone_draw, cx, cy, 150 * s, s)
+    draw_halftone(halftone_draw, cx, cy, 155 * s, s)
     layer = Image.alpha_composite(layer, halftone_layer)
     draw = ImageDraw.Draw(layer)
 
-    # Слои взрыва — толстые контуры
-    outer = cartoon_star_points(cx, cy, 88 * s, 265 * s, 9, wobble=0.28, rotation=0.08)
+    outer = cartoon_star_points(cx, cy, 92 * s, 270 * s, 9, wobble=0.3, rotation=0.1)
     draw_outlined_polygon(draw, outer, RED, stroke)
 
-    mid = cartoon_star_points(cx, cy, 65 * s, 205 * s, 9, wobble=0.22, rotation=-0.05)
+    mid = cartoon_star_points(cx, cy, 68 * s, 210 * s, 9, wobble=0.24, rotation=-0.06)
     draw_outlined_polygon(draw, mid, ORANGE, stroke)
 
-    inner = cartoon_star_points(cx, cy, 42 * s, 145 * s, 8, wobble=0.16)
+    inner = cartoon_star_points(cx, cy, 44 * s, 150 * s, 8, wobble=0.18, rotation=0.04)
     draw_outlined_polygon(draw, inner, AMBER, stroke)
 
-    draw_outlined_ellipse(draw, (cx - 62 * s, cy - 62 * s, cx + 62 * s, cy + 62 * s), YELLOW, stroke)
-    draw_outlined_ellipse(draw, (cx - 30 * s, cy - 30 * s, cx + 30 * s, cy + 30 * s), WHITE, max(3, int(10 * s)))
+    draw_center_flash(draw, cx, cy, s, stroke)
 
-    # Крупные мультяшные искры
     sparks = [
         (0.58, -1.02, 14, RED), (1.0, -0.2, 11, ORANGE), (0.72, 0.88, 12, AMBER),
         (-0.2, 1.05, 13, YELLOW), (-0.88, 0.55, 11, RED), (-1.0, -0.35, 10, ORANGE),
         (-0.45, -0.92, 9, WHITE), (0.28, -0.75, 8, WHITE), (0.92, 0.55, 9, YELLOW),
     ]
     for sx, sy, sr, color in sparks:
-        px = cx + sx * 200 * s
-        py = cy + sy * 200 * s
-        draw_cartoon_dot(draw, px, py, sr * s, color, max(3, int(7 * s)))
+        draw_cartoon_dot(draw, cx + sx * 205 * s, cy + sy * 205 * s, sr * s, color, max(3, int(7 * s)))
 
-    # Жирные speed lines
     for angle_deg, length, width in [
-        (-28, 310, 10), (18, 290, 9), (108, 270, 9), (198, 300, 10), (288, 275, 9),
+        (-28, 315, 10), (18, 295, 9), (108, 275, 9), (198, 305, 10), (288, 280, 9),
     ]:
         rad = math.radians(angle_deg)
-        x1 = cx + math.cos(rad) * 130 * s
-        y1 = cy + math.sin(rad) * 130 * s
+        x1 = cx + math.cos(rad) * 135 * s
+        y1 = cy + math.sin(rad) * 135 * s
         x2 = cx + math.cos(rad) * length * s
         y2 = cy + math.sin(rad) * length * s
         draw.line((x1, y1, x2, y2), fill=BLACK, width=max(3, int(width * s)))
-
-    # Надпись BOOM
-    if show_text and size >= 256:
-        font_size = int(78 * s)
-        font = load_font(font_size)
-        text = "BOOM"
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        tx = cx - tw / 2
-        ty = cy - th / 2 - 8 * s
-        # Обводка текста
-        for ox, oy in [(-3, -3), (3, -3), (-3, 3), (3, 3), (-3, 0), (3, 0), (0, -3), (0, 3)]:
-            draw.text(
-                (tx + ox * s, ty + oy * s),
-                text,
-                font=font,
-                fill=BLACK,
-            )
-        draw.text((tx, ty), text, font=font, fill=WHITE)
 
     return layer
 
@@ -266,17 +214,17 @@ def draw_monochrome_burst(size: int, cx: float, cy: float, scale: float = 1.0) -
     draw = ImageDraw.Draw(layer)
     s = scale
 
-    outer = cartoon_star_points(cx, cy, 88 * s, 265 * s, 9, wobble=0.28)
+    outer = cartoon_star_points(cx, cy, 92 * s, 270 * s, 9, wobble=0.3)
     draw.polygon(outer, fill=BLACK)
 
-    inner = cartoon_star_points(cx, cy, 42 * s, 145 * s, 8, wobble=0.16)
+    inner = cartoon_star_points(cx, cy, 44 * s, 150 * s, 8, wobble=0.18)
     draw.polygon(inner, fill=BLACK)
 
-    draw.ellipse((cx - 62 * s, cy - 62 * s, cx + 62 * s, cy + 62 * s), fill=BLACK)
+    draw.ellipse((cx - 78 * s, cy - 78 * s, cx + 78 * s, cy + 78 * s), fill=BLACK)
     return layer
 
 
-def compose_icon(size: int, with_background: bool = True, show_text: bool = True) -> Image.Image:
+def compose_icon(size: int, with_background: bool = True) -> Image.Image:
     cx = cy = size / 2
     scale = size / 1024
 
@@ -289,8 +237,7 @@ def compose_icon(size: int, with_background: bool = True, show_text: bool = True
         glow_draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(255, 140, 0, alpha))
     glow = glow.filter(ImageFilter.GaussianBlur(radius=max(2, int(20 * scale))))
 
-    burst = draw_explosion(size, cx, cy, scale, show_text=show_text)
-
+    burst = draw_explosion(size, cx, cy, scale)
     result = Image.alpha_composite(base, glow)
     return Image.alpha_composite(result, burst)
 
@@ -298,13 +245,13 @@ def compose_icon(size: int, with_background: bool = True, show_text: bool = True
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
 
-    compose_icon(1024, with_background=True, show_text=True).convert("RGB").save(OUT / "icon.png", optimize=True)
-    compose_icon(1024, with_background=False, show_text=True).save(OUT / "android-icon-foreground.png", optimize=True)
+    compose_icon(1024, with_background=True).convert("RGB").save(OUT / "icon.png", optimize=True)
+    compose_icon(1024, with_background=False).save(OUT / "android-icon-foreground.png", optimize=True)
 
     cx = cy = 512
     draw_monochrome_burst(1024, cx, cy, 1.0).save(OUT / "android-icon-monochrome.png", optimize=True)
-    compose_icon(512, with_background=False, show_text=True).save(OUT / "splash-icon.png", optimize=True)
-    compose_icon(48, with_background=True, show_text=False).convert("RGB").save(OUT / "favicon.png", optimize=True)
+    compose_icon(512, with_background=False).save(OUT / "splash-icon.png", optimize=True)
+    compose_icon(48, with_background=True).convert("RGB").save(OUT / "favicon.png", optimize=True)
 
     print("Generated cartoon Boom icons in", OUT)
 
