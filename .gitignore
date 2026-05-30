@@ -30,7 +30,12 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
+# build artifacts
+builds/
+*.apk
+
+# local env files (токены, секреты)
+.env
 .env*.local
 
 # typescript

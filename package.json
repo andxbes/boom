@@ -33,6 +33,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.10",
+    "dotenv-cli": "^8.0.0",
     "typescript": "~5.9.2"
   },
   "scripts": {
@@ -41,7 +42,12 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "eas:login": "eas login",
+    "eas:init": "eas init",
+    "build:apk": "dotenv -e .env -- npx eas-cli build --platform android --profile preview --non-interactive --wait",
+    "download:apk": "dotenv -e .env -- node ./scripts/download-apk.js",
+    "build:android:prod": "dotenv -e .env -- npx eas-cli build --platform android --profile production"
   },
   "private": true
 }
