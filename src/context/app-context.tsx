@@ -42,6 +42,7 @@ type AppContextValue = {
   playOrder: number[];
   waitingSecondsLeft: number;
   waitingTotalSeconds: number;
+  pendingNextOrderIndex: number | null;
   isPlaying: boolean;
   isQueueRunning: boolean;
   schedule: ScheduleRow[];
@@ -678,6 +679,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     playOrder,
     waitingSecondsLeft,
     waitingTotalSeconds,
+    pendingNextOrderIndex,
     isPlaying: phase === 'playing' && status.playing,
     isQueueRunning,
     schedule,

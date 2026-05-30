@@ -1,6 +1,5 @@
 import type { PlayerPhase } from '@/services/queue';
 import type { ProfileSettings, Track } from '@/types/profile';
-import { formatDuration } from '@/utils/time';
 
 export type ScheduleRow = {
   id: string;
@@ -16,6 +15,11 @@ export type ScheduleRow = {
 
 const DEFAULT_TRACK_DURATION = 180;
 const MAX_ROWS = 40;
+const MAX_TIMELINE_TRACKS = 10;
+
+export function toTimelineTracks(rows: ScheduleRow[]): ScheduleRow[] {
+  return rows.filter((row) => row.kind === 'track').slice(0, MAX_TIMELINE_TRACKS);
+}
 
 type BuildScheduleInput = {
   tracks: Track[];
@@ -70,16 +74,6 @@ export function buildSchedule(input: BuildScheduleInput): ScheduleRow[] {
   }
 
   if (phase === 'waiting') {
-    rows.push({
-      id: `pause-active-${currentOrderIndex}`,
-      kind: 'pause',
-      timestampMs: now,
-      orderIndex: null,
-      sequenceNumber: null,
-      label: `Пауза · ${waitingSecondsLeft} сек`,
-      isCurrent: true,
-      isEstimated: false,
-    });
     const nextIndex =
       pendingNextOrderIndex ?? getNextIndex(playOrder, currentOrderIndex, settings.loop);
     appendUpcoming(
@@ -136,16 +130,6 @@ function appendUpcoming(
 
     if (settings.intervalEnabled && settings.maxIntervalSeconds > 0) {
       const estimate = Math.round(settings.maxIntervalSeconds / 2);
-      rows.push({
-        id: `pause-${orderIndex}-${cursorMs}`,
-        kind: 'pause',
-        timestampMs: cursorMs,
-        orderIndex: null,
-        sequenceNumber: null,
-        label: `Пауза · ~до ${formatDuration(settings.maxIntervalSeconds)}`,
-        isCurrent: false,
-        isEstimated: true,
-      });
       cursorMs += estimate * 1000;
     }
 

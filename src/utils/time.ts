@@ -25,3 +25,16 @@ export function formatDuration(seconds: number): string {
   const minutes = Math.floor((seconds % 3600) / 60);
   return minutes > 0 ? `${hours} ч ${minutes} мин` : `${hours} ч`;
 }
+
+/** Формат отсчёта: 0:45, 1:05, 12:30 */
+export function formatCountdown(seconds: number): string {
+  const safe = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(safe / 60);
+  const rest = safe % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hours}:${String(mins).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+  }
+  return `${minutes}:${String(rest).padStart(2, '0')}`;
+}
