@@ -23,10 +23,13 @@ import { buildSchedule, type ScheduleRow } from '@/services/schedule';
 import { loadProfilesSnapshot, saveProfilesSnapshot } from '@/services/profile-storage';
 import {
   applyVolumeToActiveSound,
+  configureBackgroundPlayback,
   disposeActiveSound,
   disposePreparedSound,
+  getActiveSoundStatus,
   hasActiveSound,
   IDLE_PLAYBACK,
+  isPlaybackAtEnd,
   openAndPlayTrack,
   pauseActiveSound,
   prepareTrackForPlayback,
@@ -104,7 +107,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const phaseRef = useRef(phase);
   const playOrderRef = useRef(playOrder);
   const currentOrderIndexRef = useRef(currentOrderIndex);
-  const waitingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const waitingAdvanceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const waitingUiTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waitingEndsAtRef = useRef<number | null>(null);
   const lastFinishedTrackIdRef = useRef<string | null>(null);
   const openGenerationRef = useRef(0);
@@ -163,9 +167,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const clearWaitingTimer = () => {
-    if (waitingTimerRef.current) {
-      clearInterval(waitingTimerRef.current);
-      waitingTimerRef.current = null;
+    if (waitingAdvanceTimerRef.current) {
+      clearTimeout(waitingAdvanceTimerRef.current);
+      waitingAdvanceTimerRef.current = null;
+    }
+    if (waitingUiTimerRef.current) {
+      clearInterval(waitingUiTimerRef.current);
+      waitingUiTimerRef.current = null;
     }
   };
 
@@ -175,10 +183,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    void configureBackgroundPlayback().catch((error) => {
+      console.warn('Failed to configure background audio:', error);
+    });
     void loadProfilesSnapshot().then((loaded) => {
       setSnapshot(loaded);
       setPlayOrder(buildPlayOrder(loaded.profiles[0]?.tracks.length ?? 0, loaded.profiles[0]?.settings.shuffle ?? false));
     });
+  }, []);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'background' || nextState === 'active') {
+        void configureBackgroundPlayback().catch((error) => {
+          console.warn('Failed to configure background audio:', error);
+        });
+      }
+    });
+    return () => subscription.remove();
   }, []);
 
   useEffect(() => {
@@ -384,6 +406,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [activeProfile, advanceQueueAfterTrack, stopPlayback, syncPlaybackVolume],
   );
 
+  const armWaitingTimers = useCallback((nextOrderIndex: number) => {
+    clearWaitingTimer();
+
+    const fireAdvance = () => {
+      waitingAdvanceTimerRef.current = null;
+      waitingEndsAtRef.current = null;
+      clearWaitingTimer();
+      void openTrackRef.current(nextOrderIndex, playOrderRef.current, true);
+    };
+
+    const delayMs = Math.max(0, (waitingEndsAtRef.current ?? Date.now()) - Date.now());
+    waitingAdvanceTimerRef.current = setTimeout(fireAdvance, delayMs);
+
+    const tickUi = () => {
+      const remaining = syncWaitingSecondsLeft();
+      setWaitingSecondsLeft(remaining);
+      if (remaining <= 0 && waitingAdvanceTimerRef.current) {
+        clearTimeout(waitingAdvanceTimerRef.current);
+        waitingAdvanceTimerRef.current = null;
+        fireAdvance();
+      }
+    };
+
+    tickUi();
+    waitingUiTimerRef.current = setInterval(tickUi, 250);
+  }, []);
+
   const startWaitingForNext = useCallback(
     (nextOrderIndex: number) => {
       if (!activeProfile) {
@@ -410,22 +459,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setPendingNextOrderIndex(nextOrderIndex);
       setWaitingSecondsLeft(delaySeconds);
       setWaitingTotalSeconds(delaySeconds);
-      clearWaitingTimer();
-
-      const tick = () => {
-        const remaining = syncWaitingSecondsLeft();
-        setWaitingSecondsLeft(remaining);
-        if (remaining <= 0) {
-          clearWaitingTimer();
-          waitingEndsAtRef.current = null;
-          void openTrackRef.current(nextOrderIndex, playOrderRef.current, true);
-        }
-      };
-
-      tick();
-      waitingTimerRef.current = setInterval(tick, 250);
+      armWaitingTimers(nextOrderIndex);
     },
-    [activeProfile, syncPlaybackVolume],
+    [activeProfile, armWaitingTimers, syncPlaybackVolume],
   );
 
   openTrackRef.current = openTrack;
@@ -468,22 +504,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setPendingNextOrderIndex(orderIndex);
       setWaitingSecondsLeft(secondsLeft);
       setWaitingTotalSeconds(totalSeconds ?? secondsLeft);
-      clearWaitingTimer();
-
-      const tick = () => {
-        const remaining = syncWaitingSecondsLeft();
-        setWaitingSecondsLeft(remaining);
-        if (remaining <= 0) {
-          clearWaitingTimer();
-          waitingEndsAtRef.current = null;
-          void openTrack(orderIndex, playOrderRef.current, true);
-        }
-      };
-
-      tick();
-      waitingTimerRef.current = setInterval(tick, 250);
+      armWaitingTimers(orderIndex);
     },
-    [activeProfile, openTrack, syncPlaybackVolume],
+    [activeProfile, armWaitingTimers, syncPlaybackVolume],
   );
 
   useEffect(() => {
@@ -602,6 +625,61 @@ export function AppProvider({ children }: { children: ReactNode }) {
   playRef.current = play;
   stopQueueRef.current = stopQueue;
 
+  const catchUpQueueOnForeground = useCallback(async () => {
+    if (!activeProfile) {
+      return;
+    }
+
+    const currentPhase = phaseRef.current;
+
+    if (currentPhase === 'waiting' && pendingNextOrderIndexRef.current !== null) {
+      const remaining = syncWaitingSecondsLeft();
+      setWaitingSecondsLeft(remaining);
+      if (remaining <= 0) {
+        clearWaitingTimer();
+        waitingEndsAtRef.current = null;
+        void openTrackRef.current(pendingNextOrderIndexRef.current, playOrderRef.current, true);
+        return;
+      }
+      if (!waitingAdvanceTimerRef.current) {
+        armWaitingTimers(pendingNextOrderIndexRef.current);
+      }
+      return;
+    }
+
+    if (currentPhase !== 'playing') {
+      return;
+    }
+
+    const status = await getActiveSoundStatus();
+    if (!status?.isLoaded) {
+      return;
+    }
+
+    setPlaybackSnapshot({
+      playing: status.isPlaying,
+      currentTime: status.positionMillis / 1000,
+      duration: status.durationMillis != null ? status.durationMillis / 1000 : 0,
+    });
+
+    if (isPlaybackAtEnd(status)) {
+      const track = getTrackAt(
+        playOrderRef.current,
+        currentOrderIndexRef.current,
+        activeProfile.tracks,
+      );
+      if (track) {
+        void advanceQueueAfterTrack(track.id);
+      }
+      return;
+    }
+
+    if (!status.isPlaying && hasActiveSound()) {
+      await resumeActiveSound();
+      setPhase('playing');
+    }
+  }, [activeProfile, advanceQueueAfterTrack, armWaitingTimers]);
+
   useEffect(() => {
     if (!activeProfile) {
       return;
@@ -647,6 +725,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const appStateSubscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') {
         tick();
+        void catchUpQueueOnForeground();
       }
     });
     return () => {
@@ -660,6 +739,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     activeProfile?.settings.autoStartMinutes,
     activeProfile?.settings.autoStopMinutes,
     activeProfile?.tracks.length,
+    catchUpQueueOnForeground,
   ]);
 
   const isQueueRunning = phase === 'waiting' || phase === 'playing';

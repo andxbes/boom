@@ -111,6 +111,27 @@ async function reconfigureAudioSession(): Promise<void> {
   });
 }
 
+/** Call once at app start so background playback works before the first track opens. */
+export async function configureBackgroundPlayback(): Promise<void> {
+  await reconfigureAudioSession();
+}
+
+export async function getActiveSoundStatus(): Promise<AVPlaybackStatus | null> {
+  if (!activeSound) {
+    return null;
+  }
+
+  try {
+    return await activeSound.getStatusAsync();
+  } catch {
+    return null;
+  }
+}
+
+export function isPlaybackAtEnd(status: AVPlaybackStatus): boolean {
+  return isAtEnd(status);
+}
+
 async function waitUntilLoaded(sound: Audio.Sound): Promise<AVPlaybackStatus> {
   const started = Date.now();
 
@@ -317,6 +338,7 @@ export async function resumeActiveSound(): Promise<void> {
     return;
   }
 
+  await reconfigureAudioSession();
   await activeSound.playAsync();
 }
 
