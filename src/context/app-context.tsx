@@ -1,53 +1,55 @@
 import * as DocumentPicker from 'expo-document-picker';
 import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
+    createContext,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
 } from 'react';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Alert, AppState } from 'react-native';
 
-import {
-  buildPlayOrder,
-  getNextQueueIndex,
-  getRandomIntervalSeconds,
-  getTrackAt,
-  type PlayerPhase,
-} from '@/services/queue';
 import { isSchedulePlaybackAllowed } from '@/services/auto-schedule';
-import { buildSchedule, type ScheduleRow } from '@/services/schedule';
 import { loadProfilesSnapshot, saveProfilesSnapshot } from '@/services/profile-storage';
 import {
-  applyVolumeToActiveSound,
-  configureBackgroundPlayback,
-  disposeActiveSound,
-  disposePreparedSound,
-  getActiveSoundStatus,
-  hasActiveSound,
-  IDLE_PLAYBACK,
-  isPlaybackAtEnd,
-  openAndPlayTrack,
-  pauseActiveSound,
-  prepareTrackForPlayback,
-  resumeActiveSound,
-  setPlaybackVolume,
-  type TrackPlaybackSnapshot,
-} from '@/services/track-player';
+    buildPlayOrder,
+    getNextQueueIndex,
+    getRandomIntervalSeconds,
+    getTrackAt,
+    type PlayerPhase,
+} from '@/services/queue';
+import { buildSchedule, type ScheduleRow } from '@/services/schedule';
 import { persistTrack, removeTrackFile } from '@/services/track-files';
 import {
-  createProfile,
-  MAX_INTERVAL_SECONDS,
-  MAX_VOLUME_PERCENT,
-  MIN_VOLUME_PERCENT,
-  normalizeMinutesOfDay,
-  type Profile,
-  type ProfileSettings,
-  type ProfilesSnapshot,
-  type Track,
+    applyVolumeToActiveSound,
+    configureBackgroundPlayback,
+    disposeActiveSound,
+    disposePreparedSound,
+    getActiveSoundStatus,
+    hasActiveSound,
+    IDLE_PLAYBACK,
+    isPlaybackAtEnd,
+    keepAwakeTag,
+    openAndPlayTrack,
+    pauseActiveSound,
+    prepareTrackForPlayback,
+    resumeActiveSound,
+    setPlaybackVolume,
+    type TrackPlaybackSnapshot,
+} from '@/services/track-player';
+import {
+    createProfile,
+    MAX_INTERVAL_SECONDS,
+    MAX_VOLUME_PERCENT,
+    MIN_VOLUME_PERCENT,
+    normalizeMinutesOfDay,
+    type Profile,
+    type ProfileSettings,
+    type ProfilesSnapshot,
+    type Track,
 } from '@/types/profile';
 
 type AppContextValue = {
@@ -393,7 +395,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             }
             void advanceQueueAfterTrack(track.id);
           },
-          { fromQueue },
+          { fromQueue, title: track.name },
         );
       } catch (error) {
         console.warn('Failed to play track:', error);
@@ -657,9 +659,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     setPlaybackSnapshot({
-      playing: status.isPlaying,
-      currentTime: status.positionMillis / 1000,
-      duration: status.durationMillis != null ? status.durationMillis / 1000 : 0,
+      playing: status.playing,
+      currentTime: status.currentTime,
+      duration: status.duration > 0 ? status.duration : 0,
     });
 
     if (isPlaybackAtEnd(status)) {
@@ -674,7 +676,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    if (!status.isPlaying && hasActiveSound()) {
+    if (!status.playing && hasActiveSound()) {
       await resumeActiveSound();
       setPhase('playing');
     }
@@ -743,6 +745,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   ]);
 
   const isQueueRunning = phase === 'waiting' || phase === 'playing';
+
+  useEffect(() => {
+    if (!isQueueRunning) {
+      deactivateKeepAwake(keepAwakeTag);
+      return;
+    }
+
+    void activateKeepAwakeAsync(keepAwakeTag);
+    return () => {
+      deactivateKeepAwake(keepAwakeTag);
+    };
+  }, [isQueueRunning]);
 
   const togglePlayback = useCallback(() => {
     if (isQueueRunning) {
