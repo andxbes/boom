@@ -3,13 +3,18 @@ import { View, StyleSheet } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
+import { describeAutoSchedule } from '@/services/auto-schedule';
 import type { PlayerPhase } from '@/services/queue';
-import type { Track } from '@/types/profile';
+import type { ProfileSettings, Track } from '@/types/profile';
 import { formatCountdown } from '@/utils/time';
 
 type QueueStatusBarProps = {
   phase: PlayerPhase;
   isQueueRunning: boolean;
+  isAutoScheduleEnabled: boolean;
+  autoSchedulePlaybackAllowed: boolean | null;
+  scheduleManualHold: boolean;
+  profileSettings: ProfileSettings;
   waitingSecondsLeft: number;
   waitingTotalSeconds: number;
   currentTrack: Track | null;
@@ -22,6 +27,10 @@ type QueueStatusBarProps = {
 export function QueueStatusBar({
   phase,
   isQueueRunning,
+  isAutoScheduleEnabled,
+  autoSchedulePlaybackAllowed,
+  scheduleManualHold,
+  profileSettings,
   waitingSecondsLeft,
   waitingTotalSeconds,
   currentTrack,
@@ -37,6 +46,8 @@ export function QueueStatusBar({
 
   const trackRemaining =
     playbackDuration > 0 ? Math.max(0, Math.ceil(playbackDuration - playbackCurrentTime)) : null;
+
+  const scheduleDescription = isAutoScheduleEnabled ? describeAutoSchedule(profileSettings) : null;
 
   let statusLabel = 'Очередь остановлена';
   let detailLabel = 'Нажмите ▶, чтобы запустить отсчёт';
@@ -55,12 +66,24 @@ export function QueueStatusBar({
     detailLabel = '';
   }
 
+  if (isAutoScheduleEnabled && scheduleDescription) {
+    if (autoSchedulePlaybackAllowed === false) {
+      detailLabel = `${scheduleDescription} · сейчас вне окна`;
+    } else if (autoSchedulePlaybackAllowed === true && phase === 'idle' && !scheduleManualHold) {
+      detailLabel = `${scheduleDescription} · автозапуск…`;
+    } else if (autoSchedulePlaybackAllowed === true && scheduleManualHold) {
+      detailLabel = `${scheduleDescription} · пауза до конца окна`;
+    } else if (autoSchedulePlaybackAllowed === true) {
+      detailLabel = scheduleDescription;
+    }
+  }
+
   return (
     <ThemedView type="backgroundElement" style={styles.container}>
       <View style={styles.texts}>
         <ThemedText type="smallBold">{statusLabel}</ThemedText>
         {detailLabel ? (
-          <ThemedText type="small" themeColor="textSecondary" numberOfLines={1}>
+          <ThemedText type="small" themeColor="textSecondary" numberOfLines={2}>
             {detailLabel}
           </ThemedText>
         ) : null}

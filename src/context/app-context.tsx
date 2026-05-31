@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { Alert } from 'react-native';
+import { Alert, AppState } from 'react-native';
 
 import {
   buildPlayOrder,
@@ -18,6 +18,7 @@ import {
   getTrackAt,
   type PlayerPhase,
 } from '@/services/queue';
+import { isSchedulePlaybackAllowed } from '@/services/auto-schedule';
 import { buildSchedule, type ScheduleRow } from '@/services/schedule';
 import { loadProfilesSnapshot, saveProfilesSnapshot } from '@/services/profile-storage';
 import {
@@ -39,6 +40,7 @@ import {
   MAX_INTERVAL_SECONDS,
   MAX_VOLUME_PERCENT,
   MIN_VOLUME_PERCENT,
+  normalizeMinutesOfDay,
   type Profile,
   type ProfileSettings,
   type ProfilesSnapshot,
@@ -59,6 +61,9 @@ type AppContextValue = {
   pendingNextOrderIndex: number | null;
   isPlaying: boolean;
   isQueueRunning: boolean;
+  isAutoScheduleEnabled: boolean;
+  autoSchedulePlaybackAllowed: boolean | null;
+  scheduleManualHold: boolean;
   schedule: ScheduleRow[];
   playbackCurrentTime: number;
   playbackDuration: number;
@@ -93,6 +98,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [waitingTotalSeconds, setWaitingTotalSeconds] = useState(0);
   const [pendingNextOrderIndex, setPendingNextOrderIndex] = useState<number | null>(null);
   const [playbackSnapshot, setPlaybackSnapshot] = useState<TrackPlaybackSnapshot>(IDLE_PLAYBACK);
+  const [autoSchedulePlaybackAllowed, setAutoSchedulePlaybackAllowed] = useState<boolean | null>(null);
+  const [scheduleManualHold, setScheduleManualHold] = useState(false);
 
   const phaseRef = useRef(phase);
   const playOrderRef = useRef(playOrder);
@@ -101,8 +108,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const waitingEndsAtRef = useRef<number | null>(null);
   const lastFinishedTrackIdRef = useRef<string | null>(null);
   const openGenerationRef = useRef(0);
+  const previousProfileIdRef = useRef<string | null>(null);
+  const scheduleManualHoldRef = useRef(false);
+  const pendingNextOrderIndexRef = useRef(pendingNextOrderIndex);
+  const playRef = useRef<() => void>(() => {});
+  const stopQueueRef = useRef<() => Promise<void>>(async () => {});
 
   phaseRef.current = phase;
+  pendingNextOrderIndexRef.current = pendingNextOrderIndex;
   playOrderRef.current = playOrder;
   currentOrderIndexRef.current = currentOrderIndex;
 
@@ -115,6 +128,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => (activeProfile ? getTrackAt(playOrder, currentOrderIndex, activeProfile.tracks) : null),
     [activeProfile, playOrder, currentOrderIndex],
   );
+
+  const isAutoScheduleEnabled = activeProfile
+    ? activeProfile.settings.autoStartEnabled || activeProfile.settings.autoStopEnabled
+    : false;
 
   const schedule = useMemo(
     () =>
@@ -173,14 +190,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    scheduleManualHoldRef.current = false;
+    setScheduleManualHold(false);
+    setAutoSchedulePlaybackAllowed(null);
+    previousProfileIdRef.current = null;
+  }, [activeProfile?.id]);
+
+  useEffect(() => {
     if (!activeProfile) {
       return;
     }
-    setPlayOrder(buildPlayOrder(activeProfile.tracks.length, activeProfile.settings.shuffle));
-    setCurrentOrderIndex(0);
-    setPhase('idle');
-    clearWaitingTimer();
-    void stopPlayback();
+
+    const previousProfileId = previousProfileIdRef.current;
+    previousProfileIdRef.current = activeProfile.id;
+
+    if (previousProfileId !== null && previousProfileId !== activeProfile.id) {
+      setPlayOrder(buildPlayOrder(activeProfile.tracks.length, activeProfile.settings.shuffle));
+      setCurrentOrderIndex(0);
+      setPhase('idle');
+      clearWaitingTimer();
+      void stopPlayback();
+    }
   }, [activeProfile?.id, stopPlayback]);
 
   useEffect(() => {
@@ -501,6 +531,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    scheduleManualHoldRef.current = false;
+    setScheduleManualHold(false);
+
     if (phaseRef.current === 'paused') {
       if (pendingNextOrderIndex !== null && waitingSecondsLeft > 0) {
         resumeWaitingTimer(pendingNextOrderIndex, waitingSecondsLeft, waitingTotalSeconds);
@@ -536,6 +569,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   ]);
 
   const pause = useCallback(() => {
+    scheduleManualHoldRef.current = true;
+    setScheduleManualHold(true);
+
     if (phaseRef.current === 'waiting') {
       clearWaitingTimer();
       const remaining = syncWaitingSecondsLeft();
@@ -549,6 +585,82 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setPhase('paused');
     }
   }, []);
+
+  const stopQueue = useCallback(async () => {
+    clearWaitingTimer();
+    waitingEndsAtRef.current = null;
+    setPendingNextOrderIndex(null);
+    setWaitingSecondsLeft(0);
+    setWaitingTotalSeconds(0);
+    await stopPlayback();
+    void disposePreparedSound();
+    setPhase('idle');
+    scheduleManualHoldRef.current = false;
+    setScheduleManualHold(false);
+  }, [stopPlayback]);
+
+  playRef.current = play;
+  stopQueueRef.current = stopQueue;
+
+  useEffect(() => {
+    if (!activeProfile) {
+      return;
+    }
+
+    const tick = () => {
+      const allowed = isSchedulePlaybackAllowed(activeProfile.settings);
+      setAutoSchedulePlaybackAllowed(allowed);
+
+      if (allowed === null) {
+        return;
+      }
+
+      const queueActive =
+        phaseRef.current === 'waiting' ||
+        phaseRef.current === 'playing' ||
+        phaseRef.current === 'paused';
+
+      if (!allowed) {
+        scheduleManualHoldRef.current = false;
+        setScheduleManualHold(false);
+        if (queueActive) {
+          void stopQueueRef.current();
+        }
+        return;
+      }
+
+      if (queueActive) {
+        return;
+      }
+
+      if (
+        phaseRef.current === 'idle' &&
+        activeProfile.tracks.length > 0 &&
+        !scheduleManualHoldRef.current
+      ) {
+        playRef.current();
+      }
+    };
+
+    tick();
+    const intervalId = setInterval(tick, 15_000);
+    const appStateSubscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        tick();
+      }
+    });
+    return () => {
+      clearInterval(intervalId);
+      appStateSubscription.remove();
+    };
+  }, [
+    activeProfile,
+    activeProfile?.settings.autoStartEnabled,
+    activeProfile?.settings.autoStopEnabled,
+    activeProfile?.settings.autoStartMinutes,
+    activeProfile?.settings.autoStopMinutes,
+    activeProfile?.tracks.length,
+  ]);
 
   const isQueueRunning = phase === 'waiting' || phase === 'playing';
 
@@ -694,6 +806,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setPlaybackVolume(normalized.volumePercent);
         void applyVolumeToActiveSound();
       }
+      if (normalized.autoStartMinutes !== undefined) {
+        normalized.autoStartMinutes = normalizeMinutesOfDay(normalized.autoStartMinutes);
+      }
+      if (normalized.autoStopMinutes !== undefined) {
+        normalized.autoStopMinutes = normalizeMinutesOfDay(normalized.autoStopMinutes);
+      }
       await updateActiveProfile((profile) => ({
         ...profile,
         settings: { ...profile.settings, ...normalized },
@@ -816,6 +934,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     pendingNextOrderIndex,
     isPlaying: phase === 'playing' && playbackSnapshot.playing,
     isQueueRunning,
+    isAutoScheduleEnabled,
+    autoSchedulePlaybackAllowed,
+    scheduleManualHold,
     schedule,
     playbackCurrentTime: playbackSnapshot.currentTime,
     playbackDuration: playbackSnapshot.duration,

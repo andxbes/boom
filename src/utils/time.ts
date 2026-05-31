@@ -1,4 +1,17 @@
+import { MINUTES_PER_DAY, normalizeMinutesOfDay } from '@/types/profile';
+
 export const MAX_INTERVAL_SECONDS = 3600;
+
+export function formatTimeOfDay(minutes: number): string {
+  const normalized = normalizeMinutesOfDay(minutes);
+  const hours = Math.floor(normalized / 60);
+  const mins = normalized % 60;
+  return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`;
+}
+
+export function minutesToTimeOfDay(hours: number, mins: number): number {
+  return normalizeMinutesOfDay(hours * 60 + mins);
+}
 
 export function formatClockTime(timestampMs: number): string {
   const date = new Date(timestampMs);

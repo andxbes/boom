@@ -6,6 +6,7 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+import { ScheduleTimePicker } from '@/components/player/schedule-time-picker';
 import {
   MAX_INTERVAL_SECONDS,
   MAX_VOLUME_PERCENT,
@@ -45,6 +46,42 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
           />
         }
       />
+      <View style={styles.section}>
+        <ThemedText type="smallBold">Расписание</ThemedText>
+        <ThemedText themeColor="textSecondary" type="small">
+          Автоматически запускать и останавливать очередь по времени суток
+        </ThemedText>
+        <SettingRow
+          label="Автозапуск"
+          control={
+            <Switch
+              value={settings.autoStartEnabled}
+              onValueChange={(autoStartEnabled) => onChange({ autoStartEnabled })}
+            />
+          }
+        />
+        <ScheduleTimePicker
+          label="Время запуска"
+          minutes={settings.autoStartMinutes}
+          disabled={!settings.autoStartEnabled}
+          onChange={(autoStartMinutes) => onChange({ autoStartMinutes })}
+        />
+        <SettingRow
+          label="Автоостановка"
+          control={
+            <Switch
+              value={settings.autoStopEnabled}
+              onValueChange={(autoStopEnabled) => onChange({ autoStopEnabled })}
+            />
+          }
+        />
+        <ScheduleTimePicker
+          label="Время остановки"
+          minutes={settings.autoStopMinutes}
+          disabled={!settings.autoStopEnabled}
+          onChange={(autoStopMinutes) => onChange({ autoStopMinutes })}
+        />
+      </View>
       <View style={styles.sliderBlock}>
         <ThemedText type="smallBold">Громкость: {settings.volumePercent}%</ThemedText>
         <ThemedText themeColor="textSecondary" type="small">
@@ -116,6 +153,9 @@ const styles = StyleSheet.create({
   },
   rowLabel: {
     flex: 1,
+  },
+  section: {
+    gap: Spacing.two,
   },
   sliderBlock: {
     gap: Spacing.one,

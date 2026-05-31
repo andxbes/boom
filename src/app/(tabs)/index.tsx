@@ -16,6 +16,9 @@ export default function PlayerScreen() {
     schedule,
     playOrder,
     isQueueRunning,
+    isAutoScheduleEnabled,
+    autoSchedulePlaybackAllowed,
+    scheduleManualHold,
     waitingSecondsLeft,
     waitingTotalSeconds,
     currentTrack,
@@ -48,6 +51,10 @@ export default function PlayerScreen() {
           <QueueStatusBar
             phase={phase}
             isQueueRunning={isQueueRunning}
+            isAutoScheduleEnabled={isAutoScheduleEnabled}
+            autoSchedulePlaybackAllowed={autoSchedulePlaybackAllowed}
+            scheduleManualHold={scheduleManualHold}
+            profileSettings={activeProfile.settings}
             waitingSecondsLeft={waitingSecondsLeft}
             waitingTotalSeconds={waitingTotalSeconds}
             currentTrack={currentTrack}
