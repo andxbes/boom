@@ -65,7 +65,7 @@ export async function applyVolumeToActiveSound(): Promise<void> {
   await applyPlaybackLevels(activePlayer);
 }
 
-function toSnapshot(status: AudioStatus): TrackPlaybackSnapshot {
+export function statusToSnapshot(status: AudioStatus): TrackPlaybackSnapshot {
   if (!status.isLoaded) {
     return IDLE_PLAYBACK;
   }
@@ -77,8 +77,8 @@ function toSnapshot(status: AudioStatus): TrackPlaybackSnapshot {
   };
 }
 
-function isAtEnd(status: AudioStatus): boolean {
-  if (!status.isLoaded || status.playing) {
+export function isPlaybackAtEnd(status: AudioStatus): boolean {
+  if (!status.isLoaded) {
     return false;
   }
 
@@ -86,12 +86,16 @@ function isAtEnd(status: AudioStatus): boolean {
     return true;
   }
 
-  const duration = status.duration;
-  if (duration <= 0) {
+  if (status.playing) {
     return false;
   }
 
-  if (status.currentTime < 0.05) {
+  const duration = status.duration;
+  if (duration <= FINISH_TOLERANCE_SEC) {
+    return false;
+  }
+
+  if (status.currentTime < 0.2) {
     return false;
   }
 
@@ -107,7 +111,6 @@ async function reconfigureAudioSession(): Promise<void> {
   });
 }
 
-/** Call once at app start so background playback works before the first track opens. */
 export async function configureBackgroundPlayback(): Promise<void> {
   await reconfigureAudioSession();
 }
@@ -120,8 +123,12 @@ export async function getActiveSoundStatus(): Promise<AudioStatus | null> {
   return activePlayer.currentStatus;
 }
 
-export function isPlaybackAtEnd(status: AudioStatus): boolean {
-  return isAtEnd(status);
+export async function pollActivePlaybackSnapshot(): Promise<TrackPlaybackSnapshot | null> {
+  const status = await getActiveSoundStatus();
+  if (!status) {
+    return null;
+  }
+  return statusToSnapshot(status);
 }
 
 async function waitUntilPlayerLoaded(player: AudioPlayer): Promise<void> {
@@ -216,23 +223,19 @@ function createPlayer(uri: string, updateIntervalMs: number): AudioPlayer {
   return createAudioPlayer(uri, { updateInterval: updateIntervalMs });
 }
 
+/** Preloads the file without starting playback (no hidden audio in the background). */
 export async function prepareTrackForPlayback(uri: string): Promise<void> {
-  if (prepared?.uri === uri) {
-    if (prepared.player.isLoaded && prepared.player.playing) {
-      return;
-    }
+  if (prepared?.uri === uri && prepared.player.isLoaded) {
+    return;
   }
 
   await disposePreparedSound();
   await reconfigureAudioSession();
-  await applyPlaybackLevels();
 
-  const player = createPlayer(uri, 250);
-  player.loop = true;
+  const player = createPlayer(uri, 1000);
+  player.loop = false;
   player.volume = 0;
   await waitUntilPlayerLoaded(player);
-  await player.seekTo(0);
-  await ensurePlaying(player);
   prepared = { uri, player };
 }
 
@@ -258,7 +261,7 @@ export async function openAndPlayTrack(
 
   await disposePreparedSound();
 
-  const player = createPlayer(uri, 100);
+  const player = createPlayer(uri, 500);
   player.loop = false;
   player.volume = expoVolume;
   await waitUntilPlayerLoaded(player);
@@ -271,15 +274,9 @@ async function promotePreparedPlayer(
   onFinished: () => void,
   title: string,
 ): Promise<void> {
-  try {
-    player.pause();
-    player.loop = false;
-    await player.seekTo(0);
-  } catch {
-    // Continue and try playback anyway.
-  }
-
+  player.loop = false;
   player.volume = expoVolume;
+  await player.seekTo(0);
   await startActivePlayback(player, onStatus, onFinished, title);
 }
 
@@ -291,7 +288,7 @@ async function startActivePlayback(
 ): Promise<void> {
   let finished = false;
   const finishOnce = () => {
-    if (finished) {
+    if (finished || activePlayer !== player) {
       return;
     }
     finished = true;
@@ -299,13 +296,12 @@ async function startActivePlayback(
   };
 
   const onPlaybackStatusUpdate = (status: AudioStatus) => {
-    onStatus(toSnapshot(status));
-
-    if (!status.isLoaded) {
+    if (activePlayer !== player) {
       return;
     }
+    onStatus(statusToSnapshot(status));
 
-    if (isAtEnd(status)) {
+    if (isPlaybackAtEnd(status)) {
       finishOnce();
     }
   };
@@ -320,17 +316,10 @@ async function startActivePlayback(
 
   const initialStatus = player.currentStatus;
   onPlaybackStatusUpdate(initialStatus);
-  if (isAtEnd(initialStatus)) {
-    finishOnce();
-  }
 }
 
 export async function pauseActiveSound(): Promise<void> {
-  if (!activePlayer) {
-    return;
-  }
-
-  activePlayer.pause();
+  activePlayer?.pause();
 }
 
 export async function resumeActiveSound(): Promise<void> {
