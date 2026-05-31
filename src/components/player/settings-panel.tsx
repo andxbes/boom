@@ -6,7 +6,12 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { MAX_INTERVAL_SECONDS, type ProfileSettings } from '@/types/profile';
+import {
+  MAX_INTERVAL_SECONDS,
+  MAX_VOLUME_PERCENT,
+  MIN_VOLUME_PERCENT,
+  type ProfileSettings,
+} from '@/types/profile';
 import { formatDuration } from '@/utils/time';
 
 type SettingsPanelProps = {
@@ -40,6 +45,21 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
           />
         }
       />
+      <View style={styles.sliderBlock}>
+        <ThemedText type="smallBold">Громкость: {settings.volumePercent}%</ThemedText>
+        <ThemedText themeColor="textSecondary" type="small">
+          100% — исходная громкость. Выше 100% — усиление на Android (нужна пересборка APK, не Expo Go).
+        </ThemedText>
+        <Slider
+          minimumValue={MIN_VOLUME_PERCENT}
+          maximumValue={MAX_VOLUME_PERCENT}
+          step={5}
+          value={settings.volumePercent}
+          onValueChange={(volumePercent) => onChange({ volumePercent })}
+          minimumTrackTintColor="#3c87f7"
+          maximumTrackTintColor={theme.backgroundSelected}
+        />
+      </View>
       <View style={styles.sliderBlock}>
         <ThemedText type="smallBold">
           Макс. пауза: {formatDuration(settings.maxIntervalSeconds)}

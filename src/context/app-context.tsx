@@ -10,7 +10,6 @@ import {
   type ReactNode,
 } from 'react';
 import { Alert } from 'react-native';
-import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 
 import {
   buildPlayOrder,
@@ -21,10 +20,25 @@ import {
 } from '@/services/queue';
 import { buildSchedule, type ScheduleRow } from '@/services/schedule';
 import { loadProfilesSnapshot, saveProfilesSnapshot } from '@/services/profile-storage';
+import {
+  applyVolumeToActiveSound,
+  disposeActiveSound,
+  disposePreparedSound,
+  hasActiveSound,
+  IDLE_PLAYBACK,
+  openAndPlayTrack,
+  pauseActiveSound,
+  prepareTrackForPlayback,
+  resumeActiveSound,
+  setPlaybackVolume,
+  type TrackPlaybackSnapshot,
+} from '@/services/track-player';
 import { persistTrack, removeTrackFile } from '@/services/track-files';
 import {
   createProfile,
   MAX_INTERVAL_SECONDS,
+  MAX_VOLUME_PERCENT,
+  MIN_VOLUME_PERCENT,
   type Profile,
   type ProfileSettings,
   type ProfilesSnapshot,
@@ -78,16 +92,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [waitingSecondsLeft, setWaitingSecondsLeft] = useState(0);
   const [waitingTotalSeconds, setWaitingTotalSeconds] = useState(0);
   const [pendingNextOrderIndex, setPendingNextOrderIndex] = useState<number | null>(null);
-
-  const player = useAudioPlayer(null, { updateInterval: 250 });
-  const status = useAudioPlayerStatus(player);
+  const [playbackSnapshot, setPlaybackSnapshot] = useState<TrackPlaybackSnapshot>(IDLE_PLAYBACK);
 
   const phaseRef = useRef(phase);
   const playOrderRef = useRef(playOrder);
   const currentOrderIndexRef = useRef(currentOrderIndex);
   const waitingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const waitingEndsAtRef = useRef<number | null>(null);
-  const finishHandledRef = useRef(false);
+  const lastFinishedTrackIdRef = useRef<string | null>(null);
+  const openGenerationRef = useRef(0);
 
   phaseRef.current = phase;
   playOrderRef.current = playOrder;
@@ -113,8 +126,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
             phase,
             currentOrderIndex,
             pendingNextOrderIndex,
-            currentTime: status.currentTime,
-            currentDuration: status.duration,
+            currentTime: playbackSnapshot.currentTime,
+            currentDuration: playbackSnapshot.duration,
             waitingSecondsLeft,
             waitingTotalSeconds,
           })
@@ -125,33 +138,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
       phase,
       currentOrderIndex,
       pendingNextOrderIndex,
-      status.currentTime,
-      status.duration,
+      playbackSnapshot.currentTime,
+      playbackSnapshot.duration,
       waitingSecondsLeft,
       waitingTotalSeconds,
     ],
   );
 
+  const clearWaitingTimer = () => {
+    if (waitingTimerRef.current) {
+      clearInterval(waitingTimerRef.current);
+      waitingTimerRef.current = null;
+    }
+  };
+
+  const stopPlayback = useCallback(async () => {
+    await disposeActiveSound();
+    setPlaybackSnapshot(IDLE_PLAYBACK);
+  }, []);
+
   useEffect(() => {
-    void (async () => {
-      try {
-        await setAudioModeAsync({
-          playsInSilentMode: true,
-          shouldPlayInBackground: true,
-          interruptionMode: 'doNotMix',
-        });
-      } catch (error) {
-        console.warn('Failed to configure audio mode:', error);
-      }
-      const loaded = await loadProfilesSnapshot();
+    void loadProfilesSnapshot().then((loaded) => {
       setSnapshot(loaded);
       setPlayOrder(buildPlayOrder(loaded.profiles[0]?.tracks.length ?? 0, loaded.profiles[0]?.settings.shuffle ?? false));
-    })();
+    });
   }, []);
 
   useEffect(() => {
     return () => {
       clearWaitingTimer();
+      void disposeActiveSound();
+      void disposePreparedSound();
     };
   }, []);
 
@@ -163,8 +180,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setCurrentOrderIndex(0);
     setPhase('idle');
     clearWaitingTimer();
-    player.pause();
-  }, [activeProfile?.id]);
+    void stopPlayback();
+  }, [activeProfile?.id, stopPlayback]);
 
   useEffect(() => {
     if (!activeProfile) {
@@ -197,13 +214,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    if (!activeProfile || !currentTrack || !status.duration || status.duration <= 0) {
+    if (!activeProfile || !currentTrack || !playbackSnapshot.duration || playbackSnapshot.duration <= 0) {
       return;
     }
     if (phaseRef.current !== 'playing') {
       return;
     }
-    const rounded = Math.round(status.duration);
+    const rounded = Math.round(playbackSnapshot.duration);
     if (currentTrack.durationSeconds === rounded) {
       return;
     }
@@ -213,14 +230,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         track.id === currentTrack.id ? { ...track, durationSeconds: rounded } : track,
       ),
     }));
-  }, [activeProfile, currentTrack, status.duration, updateActiveProfile]);
-
-  const clearWaitingTimer = () => {
-    if (waitingTimerRef.current) {
-      clearInterval(waitingTimerRef.current);
-      waitingTimerRef.current = null;
-    }
-  };
+  }, [activeProfile, currentTrack, playbackSnapshot.duration, updateActiveProfile]);
 
   const syncWaitingSecondsLeft = () => {
     if (waitingEndsAtRef.current === null) {
@@ -229,17 +239,78 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return Math.max(0, Math.ceil((waitingEndsAtRef.current - Date.now()) / 1000));
   };
 
-  const loadAndPlayTrack = useCallback(
-    async (orderIndex: number, nextPlayOrder = playOrderRef.current) => {
-      if (!activeProfile) {
+  const openTrackRef = useRef<
+    (orderIndex: number, nextPlayOrder?: number[], fromQueue?: boolean) => Promise<void>
+  >(async () => {});
+  const startWaitingForNextRef = useRef<(nextOrderIndex: number) => void>(() => {});
+
+  const syncPlaybackVolume = useCallback((volumePercent: number) => {
+    setPlaybackVolume(volumePercent);
+  }, []);
+
+  const advanceQueueAfterTrack = useCallback(
+    async (finishedTrackId: string) => {
+      if (lastFinishedTrackIdRef.current === finishedTrackId) {
         return;
       }
-      const track = getTrackAt(nextPlayOrder, orderIndex, activeProfile.tracks);
-      if (!track) {
+      lastFinishedTrackIdRef.current = finishedTrackId;
+
+      if (!activeProfile) {
+        await stopPlayback();
         setPhase('idle');
         return;
       }
 
+      const nextOrderIndex = getNextQueueIndex(
+        playOrderRef.current,
+        currentOrderIndexRef.current,
+        activeProfile.settings.loop,
+      );
+
+      if (nextOrderIndex === null) {
+        await stopPlayback();
+        setPhase('idle');
+        waitingEndsAtRef.current = null;
+        setPendingNextOrderIndex(null);
+        return;
+      }
+
+      const nextTrack = getTrackAt(playOrderRef.current, nextOrderIndex, activeProfile.tracks);
+      syncPlaybackVolume(activeProfile.settings.volumePercent);
+      const preparePromise = nextTrack
+        ? prepareTrackForPlayback(nextTrack.uri).catch((error) => {
+            console.warn('Failed to prepare next track:', error);
+          })
+        : Promise.resolve();
+
+      await stopPlayback();
+      await preparePromise;
+
+      startWaitingForNextRef.current(nextOrderIndex);
+    },
+    [activeProfile, stopPlayback, syncPlaybackVolume],
+  );
+
+  const openTrack = useCallback(
+    async (orderIndex: number, nextPlayOrder = playOrderRef.current, fromQueue = false) => {
+      if (!activeProfile) {
+        return;
+      }
+
+      syncPlaybackVolume(activeProfile.settings.volumePercent);
+
+      const track = getTrackAt(nextPlayOrder, orderIndex, activeProfile.tracks);
+      if (!track) {
+        await stopPlayback();
+        setPhase('idle');
+        return;
+      }
+
+      openGenerationRef.current += 1;
+      const generation = openGenerationRef.current;
+
+      lastFinishedTrackIdRef.current = null;
+      currentOrderIndexRef.current = orderIndex;
       setCurrentOrderIndex(orderIndex);
       setPhase('playing');
       clearWaitingTimer();
@@ -247,49 +318,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setWaitingSecondsLeft(0);
       setWaitingTotalSeconds(0);
       setPendingNextOrderIndex(null);
+      setPlaybackSnapshot(IDLE_PLAYBACK);
 
-      player.replace(track.uri);
-      player.loop = false;
-      player.setActiveForLockScreen(true, {
-        title: track.name,
-        artist: activeProfile.name,
-      });
-      player.play();
-    },
-    [activeProfile, player],
-  );
-
-  const startWaitingTicker = useCallback(
-    (orderIndex: number, secondsLeft: number, totalSeconds: number) => {
-      const endsAtMs = Date.now() + secondsLeft * 1000;
-      waitingEndsAtRef.current = endsAtMs;
-      setPhase('waiting');
-      setPendingNextOrderIndex(orderIndex);
-      setWaitingSecondsLeft(secondsLeft);
-      setWaitingTotalSeconds(totalSeconds);
-      clearWaitingTimer();
-
-      const tick = () => {
-        const remaining = syncWaitingSecondsLeft();
-        setWaitingSecondsLeft(remaining);
-        if (remaining <= 0) {
-          clearWaitingTimer();
-          waitingEndsAtRef.current = null;
-          void loadAndPlayTrack(orderIndex);
+      try {
+        await openAndPlayTrack(
+          track.uri,
+          (snapshot) => {
+            if (openGenerationRef.current !== generation) {
+              return;
+            }
+            setPlaybackSnapshot(snapshot);
+          },
+          () => {
+            if (openGenerationRef.current !== generation) {
+              return;
+            }
+            if (phaseRef.current !== 'playing') {
+              return;
+            }
+            if (currentOrderIndexRef.current !== orderIndex) {
+              return;
+            }
+            void advanceQueueAfterTrack(track.id);
+          },
+          { fromQueue },
+        );
+      } catch (error) {
+        console.warn('Failed to play track:', error);
+        if (openGenerationRef.current === generation) {
+          setPhase('idle');
+          setPlaybackSnapshot(IDLE_PLAYBACK);
         }
-      };
-
-      tick();
-      waitingTimerRef.current = setInterval(tick, 250);
+      }
     },
-    [loadAndPlayTrack],
-  );
-
-  const resumeWaitingTimer = useCallback(
-    (orderIndex: number, secondsLeft: number, totalSeconds?: number) => {
-      startWaitingTicker(orderIndex, secondsLeft, totalSeconds ?? secondsLeft);
-    },
-    [startWaitingTicker],
+    [activeProfile, advanceQueueAfterTrack, stopPlayback, syncPlaybackVolume],
   );
 
   const startWaitingForNext = useCallback(
@@ -298,15 +360,57 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      const nextTrack = getTrackAt(playOrderRef.current, nextOrderIndex, activeProfile.tracks);
+      syncPlaybackVolume(activeProfile.settings.volumePercent);
+      if (nextTrack) {
+        void prepareTrackForPlayback(nextTrack.uri).catch((error) => {
+          console.warn('Failed to prepare track:', error);
+        });
+      }
+
       const delaySeconds = getRandomIntervalSeconds(activeProfile.settings);
       if (delaySeconds <= 0) {
-        void loadAndPlayTrack(nextOrderIndex);
+        void openTrackRef.current(nextOrderIndex, playOrderRef.current, true);
         return;
       }
 
-      resumeWaitingTimer(nextOrderIndex, delaySeconds, delaySeconds);
+      const endsAtMs = Date.now() + delaySeconds * 1000;
+      waitingEndsAtRef.current = endsAtMs;
+      setPhase('waiting');
+      setPendingNextOrderIndex(nextOrderIndex);
+      setWaitingSecondsLeft(delaySeconds);
+      setWaitingTotalSeconds(delaySeconds);
+      clearWaitingTimer();
+
+      const tick = () => {
+        const remaining = syncWaitingSecondsLeft();
+        setWaitingSecondsLeft(remaining);
+        if (remaining <= 0) {
+          clearWaitingTimer();
+          waitingEndsAtRef.current = null;
+          void openTrackRef.current(nextOrderIndex, playOrderRef.current, true);
+        }
+      };
+
+      tick();
+      waitingTimerRef.current = setInterval(tick, 250);
     },
-    [activeProfile, loadAndPlayTrack, resumeWaitingTimer],
+    [activeProfile, syncPlaybackVolume],
+  );
+
+  openTrackRef.current = openTrack;
+  startWaitingForNextRef.current = startWaitingForNext;
+
+  const playTrackAtOrderIndex = useCallback(
+    (orderIndex: number) => {
+      if (!activeProfile) {
+        return;
+      }
+      clearWaitingTimer();
+      void disposePreparedSound();
+      void openTrack(orderIndex, playOrderRef.current, false);
+    },
+    [activeProfile, openTrack],
   );
 
   const startWaitingBeforeTrack = useCallback(
@@ -316,46 +420,81 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [startWaitingForNext],
   );
 
-  const handleTrackFinished = useCallback(() => {
-    if (!activeProfile) {
-      setPhase('idle');
-      return;
-    }
+  const resumeWaitingTimer = useCallback(
+    (orderIndex: number, secondsLeft: number, totalSeconds?: number) => {
+      if (activeProfile) {
+        syncPlaybackVolume(activeProfile.settings.volumePercent);
+        const nextTrack = getTrackAt(playOrderRef.current, orderIndex, activeProfile.tracks);
+        if (nextTrack) {
+          void prepareTrackForPlayback(nextTrack.uri).catch((error) => {
+            console.warn('Failed to prepare track:', error);
+          });
+        }
+      }
 
-    player.pause();
+      const endsAtMs = Date.now() + secondsLeft * 1000;
+      waitingEndsAtRef.current = endsAtMs;
+      setPhase('waiting');
+      setPendingNextOrderIndex(orderIndex);
+      setWaitingSecondsLeft(secondsLeft);
+      setWaitingTotalSeconds(totalSeconds ?? secondsLeft);
+      clearWaitingTimer();
 
-    const nextOrderIndex = getNextQueueIndex(
-      playOrderRef.current,
-      currentOrderIndexRef.current,
-      activeProfile.settings.loop,
-    );
+      const tick = () => {
+        const remaining = syncWaitingSecondsLeft();
+        setWaitingSecondsLeft(remaining);
+        if (remaining <= 0) {
+          clearWaitingTimer();
+          waitingEndsAtRef.current = null;
+          void openTrack(orderIndex, playOrderRef.current, true);
+        }
+      };
 
-    if (nextOrderIndex === null) {
-      setPhase('idle');
-      waitingEndsAtRef.current = null;
-      setPendingNextOrderIndex(null);
-      return;
-    }
-
-    startWaitingForNext(nextOrderIndex);
-  }, [activeProfile, player, startWaitingForNext]);
+      tick();
+      waitingTimerRef.current = setInterval(tick, 250);
+    },
+    [activeProfile, openTrack, syncPlaybackVolume],
+  );
 
   useEffect(() => {
-    if (!status.didJustFinish || finishHandledRef.current) {
+    if (phase !== 'playing' || !activeProfile) {
       return;
     }
-    if (phaseRef.current !== 'playing') {
-      return;
-    }
-    finishHandledRef.current = true;
-    handleTrackFinished();
-  }, [status.didJustFinish, handleTrackFinished]);
 
-  useEffect(() => {
-    if (status.playing && phaseRef.current === 'playing') {
-      finishHandledRef.current = false;
+    if (playbackSnapshot.duration <= 0) {
+      return;
     }
-  }, [status.playing, currentTrack?.id]);
+
+    const remaining = playbackSnapshot.duration - playbackSnapshot.currentTime;
+    if (remaining > 0.5) {
+      return;
+    }
+
+    const watchdog = setTimeout(() => {
+      if (phaseRef.current !== 'playing') {
+        return;
+      }
+
+      const current = getTrackAt(
+        playOrderRef.current,
+        currentOrderIndexRef.current,
+        activeProfile.tracks,
+      );
+      if (!current) {
+        return;
+      }
+
+      void advanceQueueAfterTrack(current.id);
+    }, 900);
+
+    return () => clearTimeout(watchdog);
+  }, [
+    activeProfile,
+    advanceQueueAfterTrack,
+    phase,
+    playbackSnapshot.currentTime,
+    playbackSnapshot.duration,
+  ]);
 
   const play = useCallback(() => {
     if (!activeProfile || activeProfile.tracks.length === 0) {
@@ -367,11 +506,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         resumeWaitingTimer(pendingNextOrderIndex, waitingSecondsLeft, waitingTotalSeconds);
         return;
       }
-      if (currentTrack) {
-        player.play();
+      if (hasActiveSound()) {
+        void resumeActiveSound();
         setPhase('playing');
         return;
       }
+      void openTrack(currentOrderIndexRef.current);
+      return;
     }
 
     if (phaseRef.current === 'idle') {
@@ -379,20 +520,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    if (phaseRef.current === 'playing' && !status.playing) {
-      player.play();
+    if (phaseRef.current === 'playing' && !playbackSnapshot.playing && hasActiveSound()) {
+      void resumeActiveSound();
       setPhase('playing');
     }
   }, [
     activeProfile,
+    openTrack,
     pendingNextOrderIndex,
+    playbackSnapshot.playing,
+    resumeWaitingTimer,
+    startWaitingBeforeTrack,
     waitingSecondsLeft,
     waitingTotalSeconds,
-    resumeWaitingTimer,
-    currentTrack,
-    player,
-    startWaitingBeforeTrack,
-    status.playing,
   ]);
 
   const pause = useCallback(() => {
@@ -405,10 +545,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
     if (phaseRef.current === 'playing') {
-      player.pause();
+      void pauseActiveSound();
       setPhase('paused');
     }
-  }, [player]);
+  }, []);
 
   const isQueueRunning = phase === 'waiting' || phase === 'playing';
 
@@ -425,9 +565,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    clearWaitingTimer();
-    player.pause();
-
     const nextOrderIndex = getNextQueueIndex(
       playOrderRef.current,
       currentOrderIndexRef.current,
@@ -439,16 +576,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    void loadAndPlayTrack(nextOrderIndex);
-  }, [activeProfile, loadAndPlayTrack, player]);
+    playTrackAtOrderIndex(nextOrderIndex);
+  }, [activeProfile, playTrackAtOrderIndex]);
 
   const skipToPrevious = useCallback(() => {
     if (!activeProfile || activeProfile.tracks.length === 0) {
       return;
     }
-
-    clearWaitingTimer();
-    player.pause();
 
     const previous =
       currentOrderIndexRef.current > 0
@@ -457,20 +591,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ? playOrderRef.current.length - 1
           : 0;
 
-    void loadAndPlayTrack(previous);
-  }, [activeProfile, loadAndPlayTrack, player]);
-
-  const playTrackAtOrderIndex = useCallback(
-    (orderIndex: number) => {
-      if (!activeProfile) {
-        return;
-      }
-      clearWaitingTimer();
-      player.pause();
-      void loadAndPlayTrack(orderIndex);
-    },
-    [activeProfile, loadAndPlayTrack, player],
-  );
+    playTrackAtOrderIndex(previous);
+  }, [activeProfile, playTrackAtOrderIndex]);
 
   const playTrackAt = useCallback(
     (trackIndex: number) => {
@@ -525,7 +647,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
 
       if (currentTrack?.id === trackId) {
-        player.pause();
+        await stopPlayback();
         setPhase('idle');
         clearWaitingTimer();
       }
@@ -536,7 +658,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         tracks: profile.tracks.filter((item) => item.id !== trackId),
       }));
     },
-    [activeProfile, currentTrack?.id, player, updateActiveProfile],
+    [activeProfile, currentTrack?.id, stopPlayback, updateActiveProfile],
   );
 
   const moveTrack = useCallback(
@@ -564,6 +686,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           Math.max(0, normalized.maxIntervalSeconds),
         );
       }
+      if (normalized.volumePercent !== undefined) {
+        normalized.volumePercent = Math.min(
+          MAX_VOLUME_PERCENT,
+          Math.max(MIN_VOLUME_PERCENT, normalized.volumePercent),
+        );
+        setPlaybackVolume(normalized.volumePercent);
+        void applyVolumeToActiveSound();
+      }
       await updateActiveProfile((profile) => ({
         ...profile,
         settings: { ...profile.settings, ...normalized },
@@ -585,9 +715,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setPhase('idle');
       setCurrentOrderIndex(0);
       clearWaitingTimer();
-      player.pause();
+      await stopPlayback();
     },
-    [persistSnapshot, player, snapshot],
+    [persistSnapshot, snapshot, stopPlayback],
   );
 
   const renameProfile = useCallback(
@@ -627,9 +757,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setPhase('idle');
       setCurrentOrderIndex(0);
       clearWaitingTimer();
-      player.pause();
+      await stopPlayback();
     },
-    [persistSnapshot, player, snapshot],
+    [persistSnapshot, snapshot, stopPlayback],
   );
 
   const switchProfile = useCallback(
@@ -641,9 +771,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setPhase('idle');
       setCurrentOrderIndex(0);
       clearWaitingTimer();
-      player.pause();
+      await stopPlayback();
     },
-    [persistSnapshot, player, snapshot],
+    [persistSnapshot, snapshot, stopPlayback],
   );
 
   const duplicateProfile = useCallback(
@@ -684,11 +814,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     waitingSecondsLeft,
     waitingTotalSeconds,
     pendingNextOrderIndex,
-    isPlaying: phase === 'playing' && status.playing,
+    isPlaying: phase === 'playing' && playbackSnapshot.playing,
     isQueueRunning,
     schedule,
-    playbackCurrentTime: status.currentTime,
-    playbackDuration: status.duration,
+    playbackCurrentTime: playbackSnapshot.currentTime,
+    playbackDuration: playbackSnapshot.duration,
     pickAndAddTracks,
     removeTrack,
     moveTrack,

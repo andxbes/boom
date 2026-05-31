@@ -1,0 +1,12 @@
+{
+  "name": "boom-loudness",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "keywords": ["expo", "react-native"],
+  "peerDependencies": {
+    "expo": "*",
+    "expo-modules-core": "*",
+    "react": "*",
+    "react-native": "*"
+  }
+}

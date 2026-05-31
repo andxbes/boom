@@ -12,6 +12,8 @@ export type ProfileSettings = {
   intervalEnabled: boolean;
   /** Максимальная пауза между треками в секундах (0–3600). Фактическая — случайная от 0 до этого значения. */
   maxIntervalSeconds: number;
+  /** Громкость в процентах от исходной: 100 = без усиления, 200 = в 2 раза громче. */
+  volumePercent: number;
 };
 
 export type Profile = {
@@ -29,12 +31,15 @@ export type ProfilesSnapshot = {
 };
 
 export const MAX_INTERVAL_SECONDS = 3600;
+export const MAX_VOLUME_PERCENT = 200;
+export const MIN_VOLUME_PERCENT = 100;
 
 export const DEFAULT_SETTINGS: ProfileSettings = {
   shuffle: false,
   loop: true,
   intervalEnabled: true,
   maxIntervalSeconds: 30,
+  volumePercent: 100,
 };
 
 export function createProfile(name: string, settings: ProfileSettings = DEFAULT_SETTINGS): Profile {
