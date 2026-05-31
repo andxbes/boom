@@ -134,11 +134,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     void (async () => {
-      await setAudioModeAsync({
-        playsInSilentMode: true,
-        shouldPlayInBackground: true,
-        interruptionMode: 'doNotMix',
-      });
+      try {
+        await setAudioModeAsync({
+          playsInSilentMode: true,
+          shouldPlayInBackground: true,
+          interruptionMode: 'doNotMix',
+        });
+      } catch (error) {
+        console.warn('Failed to configure audio mode:', error);
+      }
       const loaded = await loadProfilesSnapshot();
       setSnapshot(loaded);
       setPlayOrder(buildPlayOrder(loaded.profiles[0]?.tracks.length ?? 0, loaded.profiles[0]?.settings.shuffle ?? false));
