@@ -386,6 +386,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       queueBusyRef.current = true;
       try {
         if (!activeProfile) {
+          logQueue('advance: no active profile, stopping');
           await stopPlayback();
           setPhase('idle');
           return;
@@ -398,6 +399,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         );
 
         if (nextOrderIndex === null) {
+          logQueue('advance: queue end reached', { finishedTrackId });
           lastFinishedTrackIdRef.current = finishedTrackId;
           await stopPlayback();
           setPhase('idle');
@@ -407,6 +409,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
 
         lastFinishedTrackIdRef.current = finishedTrackId;
+        logQueue('advance: next track resolved', { finishedTrackId, nextOrderIndex });
 
         const nextTrack = getTrackAt(playOrderRef.current, nextOrderIndex, activeProfile.tracks);
         syncPlaybackVolume(activeProfile.settings.volumePercent);
@@ -416,8 +419,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
           });
         }
 
-        await stopPlayback();
-        startWaitingForNextRef.current(nextOrderIndex);
+        try {
+          await stopPlayback();
+          startWaitingForNextRef.current(nextOrderIndex);
+          logQueue('advance: waiting/start-next armed', { nextOrderIndex });
+        } catch (error) {
+          // Fallback path: if pause/waiting setup fails, open next immediately.
+          logQueue('advance: waiting arm failed, fallback to immediate open', { error, nextOrderIndex });
+          void openTrackRef.current(nextOrderIndex, playOrderRef.current, true);
+        }
+      } catch (error) {
+        logQueue('advance: unexpected error', { error, finishedTrackId });
       } finally {
         queueBusyRef.current = false;
       }
