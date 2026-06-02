@@ -94,6 +94,11 @@ type AppContextValue = {
 const AppContext = createContext<AppContextValue | null>(null);
 
 const AUDIO_MIME_TYPES = ['audio/*'];
+const STALL_PROGRESS_EPSILON_SEC = 0.2;
+const STALL_NO_PROGRESS_MS = 15_000;
+const STALL_NO_PLAYER_MS = 10_000;
+const STALL_NO_METADATA_MS = 20_000;
+const STALL_MAX_DURATION_MULTIPLIER = 3;
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<ProfilesSnapshot | null>(null);
@@ -120,6 +125,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const playRef = useRef<() => void>(() => {});
   const stopQueueRef = useRef<() => Promise<void>>(async () => {});
   const queueBusyRef = useRef(false);
+  const advanceQueueAfterTrackRef = useRef<(finishedTrackId: string) => Promise<void>>(async () => {});
+  const playbackStallTrackStartedAtRef = useRef<number>(Date.now());
+  const playbackStallLastProgressAtRef = useRef<number>(Date.now());
+  const playbackStallLastTimeRef = useRef(0);
+  const playbackStallRecoveryForTrackIdRef = useRef<string | null>(null);
 
   phaseRef.current = phase;
   pendingNextOrderIndexRef.current = pendingNextOrderIndex;
@@ -179,6 +189,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const stopPlayback = useCallback(async () => {
     await disposeActiveSound();
     setPlaybackSnapshot(IDLE_PLAYBACK);
+    playbackStallTrackStartedAtRef.current = Date.now();
+    playbackStallLastProgressAtRef.current = Date.now();
+    playbackStallLastTimeRef.current = 0;
+    playbackStallRecoveryForTrackIdRef.current = null;
+  }, []);
+
+  const notePlaybackProgress = useCallback((currentTime: number) => {
+    if (currentTime > playbackStallLastTimeRef.current + STALL_PROGRESS_EPSILON_SEC) {
+      playbackStallLastTimeRef.current = currentTime;
+      playbackStallLastProgressAtRef.current = Date.now();
+    }
   }, []);
 
   useEffect(() => {
@@ -299,6 +320,74 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setPlaybackVolume(volumePercent);
   }, []);
 
+  const forceAdvanceStalledTrack = useCallback(
+    (trackId: string, reason: string) => {
+      if (playbackStallRecoveryForTrackIdRef.current === trackId || queueBusyRef.current) {
+        return;
+      }
+      playbackStallRecoveryForTrackIdRef.current = trackId;
+      console.warn(`Playback stalled (${reason}), forcing next track:`, trackId);
+      void advanceQueueAfterTrackRef.current(trackId);
+    },
+    [],
+  );
+
+  const checkPlaybackStall = useCallback(
+    (snapshot: TrackPlaybackSnapshot | null) => {
+      if (phaseRef.current !== 'playing' || !activeProfile || queueBusyRef.current) {
+        return;
+      }
+
+      const track = getTrackAt(
+        playOrderRef.current,
+        currentOrderIndexRef.current,
+        activeProfile.tracks,
+      );
+      if (!track) {
+        return;
+      }
+
+      const now = Date.now();
+      const startedAt = playbackStallTrackStartedAtRef.current;
+      const elapsedMs = now - startedAt;
+      const knownDurationSec =
+        snapshot && snapshot.duration > 0
+          ? snapshot.duration
+          : track.durationSeconds > 0
+            ? track.durationSeconds
+            : 0;
+
+      if (!hasActiveSound()) {
+        if (elapsedMs >= STALL_NO_PLAYER_MS) {
+          forceAdvanceStalledTrack(track.id, 'no player');
+        }
+        return;
+      }
+
+      if (
+        knownDurationSec > 0 &&
+        elapsedMs >= knownDurationSec * STALL_MAX_DURATION_MULTIPLIER * 1000
+      ) {
+        forceAdvanceStalledTrack(track.id, 'exceeded 3x duration');
+        return;
+      }
+
+      if (now - playbackStallLastProgressAtRef.current >= STALL_NO_PROGRESS_MS) {
+        forceAdvanceStalledTrack(track.id, 'no progress');
+        return;
+      }
+
+      if (
+        knownDurationSec === 0 &&
+        (snapshot?.currentTime ?? 0) <= STALL_PROGRESS_EPSILON_SEC &&
+        elapsedMs >= STALL_NO_METADATA_MS
+      ) {
+        forceAdvanceStalledTrack(track.id, 'no metadata');
+      }
+    },
+    [activeProfile, forceAdvanceStalledTrack],
+  );
+
   const advanceQueueAfterTrack = useCallback(
     async (finishedTrackId: string) => {
       if (queueBusyRef.current) {
@@ -352,6 +441,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     [activeProfile, stopPlayback, syncPlaybackVolume],
   );
+  advanceQueueAfterTrackRef.current = advanceQueueAfterTrack;
 
   const openTrack = useCallback(
     async (orderIndex: number, nextPlayOrder = playOrderRef.current, fromQueue = false) => {
@@ -359,6 +449,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      let nextOrderIndexAfterFailure: number | null = null;
       queueBusyRef.current = true;
       try {
         syncPlaybackVolume(activeProfile.settings.volumePercent);
@@ -375,6 +466,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
         lastFinishedTrackIdRef.current = null;
         currentOrderIndexRef.current = orderIndex;
+        playbackStallTrackStartedAtRef.current = Date.now();
+        playbackStallLastProgressAtRef.current = Date.now();
+        playbackStallLastTimeRef.current = 0;
+        playbackStallRecoveryForTrackIdRef.current = null;
         setCurrentOrderIndex(orderIndex);
         setPhase('playing');
         clearWaitingTimer();
@@ -410,12 +505,27 @@ export function AppProvider({ children }: { children: ReactNode }) {
         } catch (error) {
           console.warn('Failed to play track:', error);
           if (openGenerationRef.current === generation) {
-            setPhase('idle');
-            setPlaybackSnapshot(IDLE_PLAYBACK);
+            if (fromQueue) {
+              nextOrderIndexAfterFailure = getNextQueueIndex(
+                nextPlayOrder,
+                orderIndex,
+                activeProfile.settings.loop,
+              );
+              if (nextOrderIndexAfterFailure === null) {
+                setPhase('idle');
+                setPlaybackSnapshot(IDLE_PLAYBACK);
+              }
+            } else {
+              setPhase('idle');
+              setPlaybackSnapshot(IDLE_PLAYBACK);
+            }
           }
         }
       } finally {
         queueBusyRef.current = false;
+        if (nextOrderIndexAfterFailure !== null) {
+          startWaitingForNextRef.current(nextOrderIndexAfterFailure);
+        }
       }
     },
     [activeProfile, advanceQueueAfterTrack, stopPlayback, syncPlaybackVolume],
@@ -549,13 +659,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     const snapshot = await pollActivePlaybackSnapshot();
     if (!snapshot) {
+      checkPlaybackStall(null);
       return;
     }
 
     setPlaybackSnapshot(snapshot);
+    notePlaybackProgress(snapshot.currentTime);
 
     const status = await getActiveSoundStatus();
     if (!status) {
+      checkPlaybackStall(snapshot);
       return;
     }
 
@@ -568,8 +681,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (track) {
         void advanceQueueAfterTrack(track.id);
       }
+      return;
     }
-  }, [activeProfile, advanceQueueAfterTrack, armWaitingAdvanceTimer]);
+
+    checkPlaybackStall(snapshot);
+  }, [activeProfile, advanceQueueAfterTrack, armWaitingAdvanceTimer, checkPlaybackStall, notePlaybackProgress]);
 
   useEffect(() => {
     if (phase !== 'waiting' && phase !== 'playing') {
@@ -640,6 +756,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     if (phaseRef.current === 'playing') {
       void pauseActiveSound();
+      playbackStallLastProgressAtRef.current = Date.now();
       setPhase('paused');
     }
   }, []);

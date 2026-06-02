@@ -231,7 +231,6 @@ export async function prepareTrackForPlayback(uri: string): Promise<void> {
 
   await disposePreparedSound();
   await reconfigureAudioSession();
-
   const player = createPlayer(uri, 1000);
   player.loop = false;
   player.volume = 0;
