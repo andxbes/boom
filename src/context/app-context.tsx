@@ -568,7 +568,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       const delaySeconds = getRandomIntervalSeconds(activeProfile.settings);
       if (delaySeconds <= 0) {
-        void openTrackRef.current(nextOrderIndex, playOrderRef.current, true);
+        // Defer to next tick so queueBusy flag from previous transition is already released.
+        setTimeout(() => {
+          void openTrackRef.current(nextOrderIndex, playOrderRef.current, true);
+        }, 0);
+        logQueue('startWaitingForNext: immediate open scheduled', { nextOrderIndex });
         return;
       }
 
