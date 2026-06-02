@@ -26,10 +26,20 @@ const KEEP_AWAKE_TAG = 'boom-queue';
 
 let activePlayer: AudioPlayer | null = null;
 let activeStatusSubscription: { remove: () => void } | null = null;
-let prepared: { uri: string; player: AudioPlayer } | null = null;
 let expoVolume = 1;
 let boostGainMilliBel = 0;
 let lastLockScreenTitle = 'Boom';
+
+function logQueue(message: string, extra?: unknown): void {
+  if (!__DEV__) {
+    return;
+  }
+  if (extra === undefined) {
+    console.log(`[QUEUE] ${message}`);
+    return;
+  }
+  console.log(`[QUEUE] ${message}`, extra);
+}
 
 function volumePercentToLevels(volumePercent: number): {
   expoVolume: number;
@@ -176,7 +186,7 @@ function deactivateLockScreen(player: AudioPlayer): void {
   player.clearLockScreenControls();
 }
 
-function disposePlayer(player: AudioPlayer): void {
+function releasePlayer(player: AudioPlayer): void {
   try {
     player.pause();
   } catch {
@@ -197,45 +207,40 @@ function disposePlayer(player: AudioPlayer): void {
 }
 
 export async function disposePreparedSound(): Promise<void> {
-  const entry = prepared;
-  prepared = null;
-
-  if (!entry) {
-    return;
-  }
-
-  disposePlayer(entry.player);
+  // Single-player mode has no separate prepared player.
 }
 
 export async function disposeActiveSound(): Promise<void> {
   detachStatusListener();
   const player = activePlayer;
-  activePlayer = null;
 
   if (!player) {
     return;
   }
 
-  disposePlayer(player);
+  try {
+    player.pause();
+  } catch {
+    // Already paused/stopped.
+  }
 }
 
-function createPlayer(uri: string, updateIntervalMs: number): AudioPlayer {
+function createPlayer(uri: string | null, updateIntervalMs: number): AudioPlayer {
   return createAudioPlayer(uri, { updateInterval: updateIntervalMs });
+}
+
+function getOrCreateActivePlayer(updateIntervalMs: number): AudioPlayer {
+  if (!activePlayer) {
+    activePlayer = createPlayer(null, updateIntervalMs);
+    activePlayer.loop = false;
+  }
+  return activePlayer;
 }
 
 /** Preloads the file without starting playback (no hidden audio in the background). */
 export async function prepareTrackForPlayback(uri: string): Promise<void> {
-  if (prepared?.uri === uri && prepared.player.isLoaded) {
-    return;
-  }
-
-  await disposePreparedSound();
-  await reconfigureAudioSession();
-  const player = createPlayer(uri, 1000);
-  player.loop = false;
-  player.volume = 0;
-  await waitUntilPlayerLoaded(player);
-  prepared = { uri, player };
+  // In single-player mode we do not preload a second player instance.
+  void uri;
 }
 
 export async function openAndPlayTrack(
@@ -244,39 +249,22 @@ export async function openAndPlayTrack(
   onFinished: () => void,
   options?: { fromQueue?: boolean; title?: string },
 ): Promise<void> {
+  logQueue('openAndPlayTrack', { uri, fromQueue: options?.fromQueue ?? false });
   await reconfigureAudioSession();
+  const player = getOrCreateActivePlayer(500);
   await disposeActiveSound();
-  await applyPlaybackLevels();
+  await applyPlaybackLevels(player);
 
   lastLockScreenTitle = options?.title ?? 'Boom';
   const lockScreenTitle = lastLockScreenTitle;
-
-  if (options?.fromQueue && prepared?.uri === uri) {
-    const entry = prepared;
-    prepared = null;
-    await promotePreparedPlayer(entry.player, onStatus, onFinished, lockScreenTitle);
-    return;
-  }
-
-  await disposePreparedSound();
-
-  const player = createPlayer(uri, 500);
   player.loop = false;
   player.volume = expoVolume;
+  logQueue('replace source');
+  player.replace(uri);
   await waitUntilPlayerLoaded(player);
-  await startActivePlayback(player, onStatus, onFinished, lockScreenTitle);
-}
-
-async function promotePreparedPlayer(
-  player: AudioPlayer,
-  onStatus: (status: TrackPlaybackSnapshot) => void,
-  onFinished: () => void,
-  title: string,
-): Promise<void> {
-  player.loop = false;
-  player.volume = expoVolume;
+  logQueue('source loaded');
   await player.seekTo(0);
-  await startActivePlayback(player, onStatus, onFinished, title);
+  await startActivePlayback(player, onStatus, onFinished, lockScreenTitle);
 }
 
 async function startActivePlayback(
@@ -312,6 +300,7 @@ async function startActivePlayback(
   await applyPlaybackLevels(player);
   activateLockScreen(player, title);
   await ensurePlaying(player);
+  logQueue('playback started', { title });
 
   const initialStatus = player.currentStatus;
   onPlaybackStatusUpdate(initialStatus);
@@ -332,7 +321,19 @@ export async function resumeActiveSound(): Promise<void> {
 }
 
 export function hasActiveSound(): boolean {
-  return activePlayer != null;
+  return activePlayer != null && activePlayer.isLoaded;
+}
+
+export async function releasePlaybackEngine(): Promise<void> {
+  detachStatusListener();
+  const player = activePlayer;
+  activePlayer = null;
+
+  if (!player) {
+    return;
+  }
+
+  releasePlayer(player);
 }
 
 export const keepAwakeTag = KEEP_AWAKE_TAG;

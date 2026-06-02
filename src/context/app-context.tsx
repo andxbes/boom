@@ -37,6 +37,7 @@ import {
     pauseActiveSound,
     pollActivePlaybackSnapshot,
     prepareTrackForPlayback,
+    releasePlaybackEngine,
     resumeActiveSound,
     setPlaybackVolume,
     type TrackPlaybackSnapshot,
@@ -96,6 +97,17 @@ const AppContext = createContext<AppContextValue | null>(null);
 const AUDIO_MIME_TYPES = ['audio/*'];
 const STALL_NO_METADATA_MS = 2_000;
 const STALL_MAX_DURATION_MULTIPLIER = 3;
+
+function logQueue(message: string, extra?: unknown): void {
+  if (!__DEV__) {
+    return;
+  }
+  if (extra === undefined) {
+    console.log(`[QUEUE] ${message}`);
+    return;
+  }
+  console.log(`[QUEUE] ${message}`, extra);
+}
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<ProfilesSnapshot | null>(null);
@@ -212,7 +224,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return () => {
       clearWaitingTimer();
-      void disposeActiveSound();
+      void releasePlaybackEngine();
       void disposePreparedSound();
     };
   }, []);
@@ -312,7 +324,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
       playbackStallRecoveryForTrackIdRef.current = trackId;
-      console.warn(`Playback stalled (${reason}), forcing next track:`, trackId);
+      logQueue(`stall detected (${reason}) -> force next`, { trackId });
       void advanceQueueAfterTrackRef.current(trackId);
     },
     [],
@@ -369,6 +381,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (phaseRef.current !== 'playing') {
         return;
       }
+      logQueue('track finished', { trackId: finishedTrackId });
 
       queueBusyRef.current = true;
       try {
@@ -426,6 +439,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
         const track = getTrackAt(nextPlayOrder, orderIndex, activeProfile.tracks);
         if (!track) {
+          logQueue('openTrack no track at order index', { orderIndex });
           await stopPlayback();
           setPhase('idle');
           return;
@@ -446,6 +460,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setWaitingTotalSeconds(0);
         setPendingNextOrderIndex(null);
         setPlaybackSnapshot(IDLE_PLAYBACK);
+        logQueue('openTrack start', { orderIndex, trackId: track.id, fromQueue });
 
         try {
           await openAndPlayTrack(
@@ -472,6 +487,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           );
         } catch (error) {
           console.warn('Failed to play track:', error);
+          logQueue('openTrack failed', { orderIndex, fromQueue, error });
           if (openGenerationRef.current === generation) {
             if (fromQueue) {
               nextOrderIndexAfterFailure = getNextQueueIndex(
@@ -479,6 +495,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 orderIndex,
                 activeProfile.settings.loop,
               );
+              logQueue('queue fallback after open failure', { nextOrderIndexAfterFailure });
               if (nextOrderIndexAfterFailure === null) {
                 setPhase('idle');
                 setPlaybackSnapshot(IDLE_PLAYBACK);
