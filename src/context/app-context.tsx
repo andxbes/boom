@@ -94,10 +94,7 @@ type AppContextValue = {
 const AppContext = createContext<AppContextValue | null>(null);
 
 const AUDIO_MIME_TYPES = ['audio/*'];
-const STALL_PROGRESS_EPSILON_SEC = 0.2;
-const STALL_NO_PROGRESS_MS = 15_000;
-const STALL_NO_PLAYER_MS = 10_000;
-const STALL_NO_METADATA_MS = 20_000;
+const STALL_NO_METADATA_MS = 2_000;
 const STALL_MAX_DURATION_MULTIPLIER = 3;
 
 export function AppProvider({ children }: { children: ReactNode }) {
@@ -127,8 +124,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const queueBusyRef = useRef(false);
   const advanceQueueAfterTrackRef = useRef<(finishedTrackId: string) => Promise<void>>(async () => {});
   const playbackStallTrackStartedAtRef = useRef<number>(Date.now());
-  const playbackStallLastProgressAtRef = useRef<number>(Date.now());
-  const playbackStallLastTimeRef = useRef(0);
   const playbackStallRecoveryForTrackIdRef = useRef<string | null>(null);
 
   phaseRef.current = phase;
@@ -190,16 +185,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await disposeActiveSound();
     setPlaybackSnapshot(IDLE_PLAYBACK);
     playbackStallTrackStartedAtRef.current = Date.now();
-    playbackStallLastProgressAtRef.current = Date.now();
-    playbackStallLastTimeRef.current = 0;
     playbackStallRecoveryForTrackIdRef.current = null;
-  }, []);
-
-  const notePlaybackProgress = useCallback((currentTime: number) => {
-    if (currentTime > playbackStallLastTimeRef.current + STALL_PROGRESS_EPSILON_SEC) {
-      playbackStallLastTimeRef.current = currentTime;
-      playbackStallLastProgressAtRef.current = Date.now();
-    }
   }, []);
 
   useEffect(() => {
@@ -350,19 +336,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const now = Date.now();
       const startedAt = playbackStallTrackStartedAtRef.current;
       const elapsedMs = now - startedAt;
-      const knownDurationSec =
-        snapshot && snapshot.duration > 0
-          ? snapshot.duration
-          : track.durationSeconds > 0
-            ? track.durationSeconds
-            : 0;
-
-      if (!hasActiveSound()) {
-        if (elapsedMs >= STALL_NO_PLAYER_MS) {
-          forceAdvanceStalledTrack(track.id, 'no player');
-        }
-        return;
-      }
+      // "Metadata is available" means the active player reported duration now.
+      // Persisted track.durationSeconds is not reliable for stall detection.
+      const knownDurationSec = snapshot && snapshot.duration > 0 ? snapshot.duration : 0;
 
       if (
         knownDurationSec > 0 &&
@@ -372,14 +348,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      if (now - playbackStallLastProgressAtRef.current >= STALL_NO_PROGRESS_MS) {
-        forceAdvanceStalledTrack(track.id, 'no progress');
-        return;
-      }
-
       if (
         knownDurationSec === 0 &&
-        (snapshot?.currentTime ?? 0) <= STALL_PROGRESS_EPSILON_SEC &&
         elapsedMs >= STALL_NO_METADATA_MS
       ) {
         forceAdvanceStalledTrack(track.id, 'no metadata');
@@ -467,8 +437,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         lastFinishedTrackIdRef.current = null;
         currentOrderIndexRef.current = orderIndex;
         playbackStallTrackStartedAtRef.current = Date.now();
-        playbackStallLastProgressAtRef.current = Date.now();
-        playbackStallLastTimeRef.current = 0;
         playbackStallRecoveryForTrackIdRef.current = null;
         setCurrentOrderIndex(orderIndex);
         setPhase('playing');
@@ -664,7 +632,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     setPlaybackSnapshot(snapshot);
-    notePlaybackProgress(snapshot.currentTime);
 
     const status = await getActiveSoundStatus();
     if (!status) {
@@ -685,7 +652,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
 
     checkPlaybackStall(snapshot);
-  }, [activeProfile, advanceQueueAfterTrack, armWaitingAdvanceTimer, checkPlaybackStall, notePlaybackProgress]);
+  }, [activeProfile, advanceQueueAfterTrack, armWaitingAdvanceTimer, checkPlaybackStall]);
 
   useEffect(() => {
     if (phase !== 'waiting' && phase !== 'playing') {
@@ -756,7 +723,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
     if (phaseRef.current === 'playing') {
       void pauseActiveSound();
-      playbackStallLastProgressAtRef.current = Date.now();
       setPhase('paused');
     }
   }, []);
