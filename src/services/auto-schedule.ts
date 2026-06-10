@@ -53,3 +53,30 @@ export function isSchedulePlaybackAllowed(
 
   return nowMinutes < settings.autoStopMinutes;
 }
+
+const MAX_SCHEDULE_PROBE_MINUTES = 49 * 60;
+
+/** Миллисекунды до следующей смены allowed/not-allowed; null если расписание выключено. */
+export function msUntilScheduleChanges(
+  settings: ProfileSettings,
+  now = new Date(),
+): number | null {
+  if (!isAutoScheduleEnabled(settings)) {
+    return null;
+  }
+
+  const currentAllowed = isSchedulePlaybackAllowed(settings, now);
+  const probe = new Date(now);
+  probe.setSeconds(0, 0);
+  probe.setMinutes(probe.getMinutes() + 1);
+
+  for (let minute = 0; minute < MAX_SCHEDULE_PROBE_MINUTES; minute += 1) {
+    const nextAllowed = isSchedulePlaybackAllowed(settings, probe);
+    if (nextAllowed !== currentAllowed) {
+      return Math.max(0, probe.getTime() - now.getTime());
+    }
+    probe.setMinutes(probe.getMinutes() + 1);
+  }
+
+  return null;
+}

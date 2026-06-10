@@ -12,7 +12,7 @@ import {
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Alert, AppState } from 'react-native';
 
-import { isSchedulePlaybackAllowed } from '@/services/auto-schedule';
+import { isSchedulePlaybackAllowed, msUntilScheduleChanges } from '@/services/auto-schedule';
 import { loadProfilesSnapshot, saveProfilesSnapshot } from '@/services/profile-storage';
 import {
     buildPlayOrder,
@@ -97,6 +97,9 @@ const AppContext = createContext<AppContextValue | null>(null);
 const AUDIO_MIME_TYPES = ['audio/*'];
 const STALL_NO_METADATA_MS = 2_000;
 const STALL_MAX_DURATION_MULTIPLIER = 3;
+const SCHEDULE_POLL_MS = 15_000;
+const SCHEDULE_BOUNDARY_BUFFER_MS = 500;
+const MAX_SET_TIMEOUT_MS = 2_147_483_647;
 
 function logQueue(message: string, extra?: unknown): void {
   if (!__DEV__) {
@@ -137,6 +140,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const advanceQueueAfterTrackRef = useRef<(finishedTrackId: string) => Promise<void>>(async () => {});
   const playbackStallTrackStartedAtRef = useRef<number>(Date.now());
   const playbackStallRecoveryForTrackIdRef = useRef<string | null>(null);
+  const scheduleBoundaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   phaseRef.current = phase;
   pendingNextOrderIndexRef.current = pendingNextOrderIndex;
@@ -201,6 +205,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    const errorUtils = (
+      globalThis as typeof globalThis & {
+        ErrorUtils?: {
+          getGlobalHandler: () => ((error: Error, isFatal?: boolean) => void) | undefined;
+          setGlobalHandler: (handler: (error: Error, isFatal?: boolean) => void) => void;
+        };
+      }
+    ).ErrorUtils;
+
+    const previousHandler = errorUtils?.getGlobalHandler();
+    errorUtils?.setGlobalHandler((error, isFatal) => {
+      console.error('[boom] uncaught error', { isFatal: isFatal ?? false, message: error.message, stack: error.stack });
+      previousHandler?.(error, isFatal);
+    });
+
     void configureBackgroundPlayback().catch((error) => {
       console.warn('Failed to configure background audio:', error);
     });
@@ -548,7 +567,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       void openTrackRef.current(nextOrderIndex, playOrderRef.current, true);
     };
 
-    const delayMs = Math.max(0, (waitingEndsAtRef.current ?? Date.now()) - Date.now());
+    const delayMs = Math.min(
+      Math.max(0, (waitingEndsAtRef.current ?? Date.now()) - Date.now()),
+      MAX_SET_TIMEOUT_MS,
+    );
     waitingAdvanceTimerRef.current = setTimeout(fireAdvance, delayMs);
   }, []);
 
@@ -785,11 +807,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    const clearScheduleBoundaryTimer = () => {
+      if (scheduleBoundaryTimerRef.current) {
+        clearTimeout(scheduleBoundaryTimerRef.current);
+        scheduleBoundaryTimerRef.current = null;
+      }
+    };
+
+    const armScheduleBoundaryTimer = () => {
+      clearScheduleBoundaryTimer();
+      const msUntilChange = msUntilScheduleChanges(activeProfile.settings);
+      if (msUntilChange === null || msUntilChange <= 0) {
+        return;
+      }
+
+      const delayMs = Math.min(msUntilChange + SCHEDULE_BOUNDARY_BUFFER_MS, MAX_SET_TIMEOUT_MS);
+      scheduleBoundaryTimerRef.current = setTimeout(() => {
+        scheduleBoundaryTimerRef.current = null;
+        tick();
+      }, delayMs);
+    };
+
     const tick = () => {
       const allowed = isSchedulePlaybackAllowed(activeProfile.settings);
       setAutoSchedulePlaybackAllowed(allowed);
 
       if (allowed === null) {
+        clearScheduleBoundaryTimer();
         return;
       }
 
@@ -804,10 +848,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (queueActive) {
           void stopQueueRef.current();
         }
+        armScheduleBoundaryTimer();
         return;
       }
 
       if (queueActive) {
+        armScheduleBoundaryTimer();
         return;
       }
 
@@ -818,10 +864,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ) {
         playRef.current();
       }
+
+      armScheduleBoundaryTimer();
     };
 
     tick();
-    const intervalId = setInterval(tick, 15_000);
+    const intervalId = setInterval(tick, SCHEDULE_POLL_MS);
     const appStateSubscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active') {
         tick();
@@ -830,6 +878,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
     return () => {
       clearInterval(intervalId);
+      clearScheduleBoundaryTimer();
       appStateSubscription.remove();
     };
   }, [
@@ -843,9 +892,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   ]);
 
   const isQueueRunning = phase === 'waiting' || phase === 'playing';
+  const shouldKeepAwakeForSchedule =
+    isAutoScheduleEnabled && (activeProfile?.tracks.length ?? 0) > 0;
 
   useEffect(() => {
-    if (!isQueueRunning) {
+    if (!isQueueRunning && !shouldKeepAwakeForSchedule) {
       deactivateKeepAwake(keepAwakeTag);
       return;
     }
@@ -854,7 +905,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       deactivateKeepAwake(keepAwakeTag);
     };
-  }, [isQueueRunning]);
+  }, [isQueueRunning, shouldKeepAwakeForSchedule]);
 
   const togglePlayback = useCallback(() => {
     if (isQueueRunning) {
