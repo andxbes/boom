@@ -1,7 +1,7 @@
 import { type ComponentProps } from 'react';
 import { Tabs } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useColorScheme } from 'react-native';
+import { type ColorValue, useColorScheme } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { TAB_BAR_CONTENT_HEIGHT } from '@/constants/layout';
@@ -9,7 +9,7 @@ import { Colors, Spacing } from '@/constants/theme';
 
 type IoniconName = ComponentProps<typeof Ionicons>['name'];
 
-function TabIcon({ name, color, size }: { name: IoniconName; color: string; size: number }) {
+function TabIcon({ name, color, size }: { name: IoniconName; color: ColorValue; size: number }) {
   return <Ionicons name={name} size={size} color={color} />;
 }
 

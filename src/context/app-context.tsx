@@ -12,7 +12,11 @@ import {
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Alert, AppState } from 'react-native';
 
-import { isSchedulePlaybackAllowed, msUntilScheduleChanges } from '@/services/auto-schedule';
+import {
+  isAutoScheduleEnabled as isScheduleSettingsEnabled,
+  isSchedulePlaybackAllowed,
+  msUntilScheduleChanges,
+} from '@/services/auto-schedule';
 import { loadProfilesSnapshot, saveProfilesSnapshot } from '@/services/profile-storage';
 import {
     buildPlayOrder,
@@ -47,7 +51,7 @@ import {
     MAX_INTERVAL_SECONDS,
     MAX_VOLUME_PERCENT,
     MIN_VOLUME_PERCENT,
-    normalizeMinutesOfDay,
+    normalizeActivityIntervals,
     type Profile,
     type ProfileSettings,
     type ProfilesSnapshot,
@@ -158,7 +162,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const isAutoScheduleEnabled = activeProfile
-    ? activeProfile.settings.autoStartEnabled || activeProfile.settings.autoStopEnabled
+    ? isScheduleSettingsEnabled(activeProfile.settings)
     : false;
 
   const schedule = useMemo(
@@ -883,10 +887,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [
     activeProfile,
-    activeProfile?.settings.autoStartEnabled,
-    activeProfile?.settings.autoStopEnabled,
-    activeProfile?.settings.autoStartMinutes,
-    activeProfile?.settings.autoStopMinutes,
+    activeProfile?.settings.autoScheduleEnabled,
+    activeProfile?.settings.activityIntervals,
     activeProfile?.tracks.length,
     catchUpQueueOnForeground,
   ]);
@@ -1049,11 +1051,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setPlaybackVolume(normalized.volumePercent);
         void applyVolumeToActiveSound();
       }
-      if (normalized.autoStartMinutes !== undefined) {
-        normalized.autoStartMinutes = normalizeMinutesOfDay(normalized.autoStartMinutes);
-      }
-      if (normalized.autoStopMinutes !== undefined) {
-        normalized.autoStopMinutes = normalizeMinutesOfDay(normalized.autoStopMinutes);
+      if (normalized.activityIntervals !== undefined) {
+        normalized.activityIntervals = normalizeActivityIntervals(normalized.activityIntervals);
       }
       await updateActiveProfile((profile) => ({
         ...profile,

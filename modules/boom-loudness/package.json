@@ -8,5 +8,10 @@
     "expo-modules-core": "*",
     "react": "*",
     "react-native": "*"
+  },
+  "peerDependenciesMeta": {
+    "expo-modules-core": {
+      "optional": true
+    }
   }
 }

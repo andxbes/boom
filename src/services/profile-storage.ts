@@ -1,6 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-import { createProfile, DEFAULT_SETTINGS, type Profile, type ProfilesSnapshot } from '@/types/profile';
+import {
+  createActivityInterval,
+  createProfile,
+  DEFAULT_AUTO_START_MINUTES,
+  DEFAULT_AUTO_STOP_MINUTES,
+  DEFAULT_SETTINGS,
+  normalizeActivityIntervals,
+  normalizeMinutesOfDay,
+  type LegacyScheduleSettings,
+  type Profile,
+  type ProfileSettings,
+  type ProfilesSnapshot,
+} from '@/types/profile';
 
 const STORAGE_KEY = '@boom/profiles';
 
@@ -40,12 +52,48 @@ export async function saveProfilesSnapshot(snapshot: ProfilesSnapshot): Promise<
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
 }
 
+function migrateScheduleSettings(
+  raw: Partial<ProfileSettings> & LegacyScheduleSettings,
+): Pick<ProfileSettings, 'autoScheduleEnabled' | 'activityIntervals'> {
+  if (Array.isArray(raw.activityIntervals) || typeof raw.autoScheduleEnabled === 'boolean') {
+    return {
+      autoScheduleEnabled: raw.autoScheduleEnabled ?? false,
+      activityIntervals: Array.isArray(raw.activityIntervals)
+        ? normalizeActivityIntervals(raw.activityIntervals)
+        : [createActivityInterval()],
+    };
+  }
+
+  const startMinutes = normalizeMinutesOfDay(
+    raw.autoStartMinutes ?? DEFAULT_AUTO_START_MINUTES,
+  );
+  const endMinutes = normalizeMinutesOfDay(raw.autoStopMinutes ?? DEFAULT_AUTO_STOP_MINUTES);
+  const enabled = Boolean(raw.autoStartEnabled || raw.autoStopEnabled);
+
+  return {
+    autoScheduleEnabled: enabled,
+    activityIntervals: [createActivityInterval(startMinutes, endMinutes)],
+  };
+}
+
 function normalizeProfile(profile: Profile): Profile {
+  const rawSettings = (profile.settings ?? {}) as Partial<ProfileSettings> & LegacyScheduleSettings;
+  const {
+    autoStartEnabled: _autoStartEnabled,
+    autoStopEnabled: _autoStopEnabled,
+    autoStartMinutes: _autoStartMinutes,
+    autoStopMinutes: _autoStopMinutes,
+    ...rest
+  } = rawSettings;
+
+  const schedule = migrateScheduleSettings(rawSettings);
+
   return {
     ...profile,
     settings: {
       ...DEFAULT_SETTINGS,
-      ...profile.settings,
+      ...rest,
+      ...schedule,
     },
     tracks: profile.tracks ?? [],
   };

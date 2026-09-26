@@ -4,13 +4,15 @@ import { Pressable, StyleSheet, Switch, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
+import { ScheduleTimePicker } from '@/components/player/schedule-time-picker';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { ScheduleTimePicker } from '@/components/player/schedule-time-picker';
 import {
+  createActivityInterval,
   MAX_INTERVAL_SECONDS,
   MAX_VOLUME_PERCENT,
   MIN_VOLUME_PERCENT,
+  type ActivityInterval,
   type ProfileSettings,
 } from '@/types/profile';
 import { formatDuration } from '@/utils/time';
@@ -24,6 +26,27 @@ const PRESETS = [0, 30, 60, 300, 900, 1800, 3600];
 
 export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
   const theme = useTheme();
+  const scheduleDisabled = !settings.autoScheduleEnabled;
+
+  const updateInterval = (id: string, patch: Partial<Pick<ActivityInterval, 'startMinutes' | 'endMinutes'>>) => {
+    onChange({
+      activityIntervals: settings.activityIntervals.map((interval) =>
+        interval.id === id ? { ...interval, ...patch } : interval,
+      ),
+    });
+  };
+
+  const addInterval = () => {
+    onChange({
+      activityIntervals: [...settings.activityIntervals, createActivityInterval()],
+    });
+  };
+
+  const removeInterval = (id: string) => {
+    onChange({
+      activityIntervals: settings.activityIntervals.filter((interval) => interval.id !== id),
+    });
+  };
 
   return (
     <ThemedView type="backgroundElement" style={styles.container}>
@@ -49,38 +72,61 @@ export function SettingsPanel({ settings, onChange }: SettingsPanelProps) {
       <View style={styles.section}>
         <ThemedText type="smallBold">Расписание</ThemedText>
         <ThemedText themeColor="textSecondary" type="small">
-          Автоматически запускать и останавливать очередь по времени суток
+          Несколько окон в течение суток. Если начало позже конца — интервал через полночь.
         </ThemedText>
         <SettingRow
-          label="Автозапуск"
+          label="Включить расписание"
           control={
             <Switch
-              value={settings.autoStartEnabled}
-              onValueChange={(autoStartEnabled) => onChange({ autoStartEnabled })}
+              value={settings.autoScheduleEnabled}
+              onValueChange={(autoScheduleEnabled) => onChange({ autoScheduleEnabled })}
             />
           }
         />
-        <ScheduleTimePicker
-          label="Время запуска"
-          minutes={settings.autoStartMinutes}
-          disabled={!settings.autoStartEnabled}
-          onChange={(autoStartMinutes) => onChange({ autoStartMinutes })}
-        />
-        <SettingRow
-          label="Автоостановка"
-          control={
-            <Switch
-              value={settings.autoStopEnabled}
-              onValueChange={(autoStopEnabled) => onChange({ autoStopEnabled })}
-            />
-          }
-        />
-        <ScheduleTimePicker
-          label="Время остановки"
-          minutes={settings.autoStopMinutes}
-          disabled={!settings.autoStopEnabled}
-          onChange={(autoStopMinutes) => onChange({ autoStopMinutes })}
-        />
+        {settings.activityIntervals.map((interval, index) => (
+          <View key={interval.id} style={styles.intervalCard}>
+            <View style={styles.intervalHeader}>
+              <ThemedText type="smallBold">Интервал {index + 1}</ThemedText>
+              <Pressable
+                accessibilityRole="button"
+                disabled={scheduleDisabled}
+                onPress={() => removeInterval(interval.id)}
+                style={scheduleDisabled && styles.disabledControl}>
+                <ThemedText type="linkPrimary">Удалить</ThemedText>
+              </Pressable>
+            </View>
+            <View style={styles.intervalTimes}>
+              <ScheduleTimePicker
+                label="Начало"
+                minutes={interval.startMinutes}
+                disabled={scheduleDisabled}
+                onChange={(startMinutes) => updateInterval(interval.id, { startMinutes })}
+              />
+              <ScheduleTimePicker
+                label="Конец"
+                minutes={interval.endMinutes}
+                disabled={scheduleDisabled}
+                onChange={(endMinutes) => updateInterval(interval.id, { endMinutes })}
+              />
+            </View>
+          </View>
+        ))}
+        {settings.autoScheduleEnabled && settings.activityIntervals.length === 0 ? (
+          <ThemedText themeColor="textSecondary" type="small">
+            Добавьте хотя бы один интервал, чтобы расписание работало.
+          </ThemedText>
+        ) : null}
+        <Pressable
+          accessibilityRole="button"
+          disabled={scheduleDisabled}
+          onPress={addInterval}
+          style={[
+            styles.addButton,
+            { backgroundColor: theme.backgroundSelected },
+            scheduleDisabled && styles.disabledControl,
+          ]}>
+          <ThemedText type="smallBold">Добавить интервал</ThemedText>
+        </Pressable>
       </View>
       <View style={styles.sliderBlock}>
         <ThemedText type="smallBold">Громкость: {settings.volumePercent}%</ThemedText>
@@ -156,6 +202,26 @@ const styles = StyleSheet.create({
   },
   section: {
     gap: Spacing.two,
+  },
+  intervalCard: {
+    gap: Spacing.two,
+  },
+  intervalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  intervalTimes: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  addButton: {
+    alignItems: 'center',
+    paddingVertical: Spacing.two,
+    borderRadius: Spacing.two,
+  },
+  disabledControl: {
+    opacity: 0.45,
   },
   sliderBlock: {
     gap: Spacing.one,

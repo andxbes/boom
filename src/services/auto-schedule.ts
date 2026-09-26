@@ -1,8 +1,8 @@
-import type { ProfileSettings } from '@/types/profile';
+import type { ActivityInterval, ProfileSettings } from '@/types/profile';
 import { formatTimeOfDay } from '@/utils/time';
 
 export function isAutoScheduleEnabled(settings: ProfileSettings): boolean {
-  return settings.autoStartEnabled || settings.autoStopEnabled;
+  return settings.autoScheduleEnabled && getValidIntervals(settings.activityIntervals).length > 0;
 }
 
 export function describeAutoSchedule(settings: ProfileSettings): string | null {
@@ -10,26 +10,28 @@ export function describeAutoSchedule(settings: ProfileSettings): string | null {
     return null;
   }
 
-  const start = formatTimeOfDay(settings.autoStartMinutes);
-  const stop = formatTimeOfDay(settings.autoStopMinutes);
+  const windows = getValidIntervals(settings.activityIntervals)
+    .map(
+      (interval) =>
+        `${formatTimeOfDay(interval.startMinutes)} – ${formatTimeOfDay(interval.endMinutes)}`,
+    )
+    .join(', ');
 
-  if (settings.autoStartEnabled && settings.autoStopEnabled) {
-    return `Расписание: ${start} – ${stop}`;
-  }
-  if (settings.autoStartEnabled) {
-    return `Автозапуск с ${start}`;
-  }
-  return `Автоостановка в ${stop}`;
+  return `Расписание: ${windows}`;
 }
 
 export function isWithinTimeWindow(nowMinutes: number, startMinutes: number, stopMinutes: number): boolean {
   if (startMinutes === stopMinutes) {
-    return true;
+    return false;
   }
   if (startMinutes < stopMinutes) {
     return nowMinutes >= startMinutes && nowMinutes < stopMinutes;
   }
   return nowMinutes >= startMinutes || nowMinutes < stopMinutes;
+}
+
+function getValidIntervals(intervals: ActivityInterval[]): ActivityInterval[] {
+  return intervals.filter((interval) => interval.startMinutes !== interval.endMinutes);
 }
 
 /** null — расписание выключено; true/false — очередь должна играть или нет. */
@@ -42,16 +44,9 @@ export function isSchedulePlaybackAllowed(
   }
 
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
-
-  if (settings.autoStartEnabled && settings.autoStopEnabled) {
-    return isWithinTimeWindow(nowMinutes, settings.autoStartMinutes, settings.autoStopMinutes);
-  }
-
-  if (settings.autoStartEnabled) {
-    return nowMinutes >= settings.autoStartMinutes;
-  }
-
-  return nowMinutes < settings.autoStopMinutes;
+  return getValidIntervals(settings.activityIntervals).some((interval) =>
+    isWithinTimeWindow(nowMinutes, interval.startMinutes, interval.endMinutes),
+  );
 }
 
 const MAX_SCHEDULE_PROBE_MINUTES = 49 * 60;

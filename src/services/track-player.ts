@@ -4,6 +4,7 @@ import {
   type AudioPlayer,
   type AudioStatus,
 } from 'expo-audio';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { setVolumeBoostGainMilliBel } from 'boom-loudness';
 
 export type TrackPlaybackSnapshot = {
@@ -23,6 +24,9 @@ const LOAD_POLL_MS = 40;
 const LOAD_TIMEOUT_MS = 12_000;
 const MAX_BOOST_MILLIBEL = 1000;
 const KEEP_AWAKE_TAG = 'boom-queue';
+/** Expo Go cannot apply app.json config plugins — lock-screen service is unavailable there. */
+const LOCK_SCREEN_SUPPORTED =
+  Constants.executionEnvironment !== ExecutionEnvironment.StoreClient;
 
 let activePlayer: AudioPlayer | null = null;
 let activeStatusSubscription: { remove: () => void } | null = null;
@@ -176,14 +180,33 @@ function detachStatusListener(): void {
 }
 
 function activateLockScreen(player: AudioPlayer, title: string): void {
-  player.setActiveForLockScreen(true, {
-    title: title || 'Boom',
-    artist: 'Boom',
-  });
+  if (!LOCK_SCREEN_SUPPORTED) {
+    return;
+  }
+
+  try {
+    player.setActiveForLockScreen(true, {
+      title: title || 'Boom',
+      artist: 'Boom',
+    });
+  } catch (error) {
+    // Native playback service is missing until a rebuild with enableBackgroundPlayback.
+    if (__DEV__) {
+      console.warn('Lock screen controls unavailable until rebuild:', error);
+    }
+  }
 }
 
 function deactivateLockScreen(player: AudioPlayer): void {
-  player.clearLockScreenControls();
+  if (!LOCK_SCREEN_SUPPORTED) {
+    return;
+  }
+
+  try {
+    player.clearLockScreenControls();
+  } catch {
+    // Ignore when the native service is not present.
+  }
 }
 
 function releasePlayer(player: AudioPlayer): void {
